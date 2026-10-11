@@ -1,6 +1,6 @@
 <#
   Deployt den Pinecone-Server auf core01 (Stack /opt/stacks/pinecone).
-  Aufruf aus dem Repo (Branch mit crates/server) in PowerShell:
+  Aufruf aus dem Server-Repo in PowerShell:
 
       .\deploy\pinecone\deploy.ps1
 

@@ -624,18 +624,12 @@ async fn create_version(
     }
     // Inhalt prüfen wie der Launcher (Format, Pfade, Hashes, Loader).
     let path = stored.path.clone();
-    let parsed = tokio::task::spawn_blocking(move || pinecone_core::modpack::read_mrpack(&path))
+    let parsed = tokio::task::spawn_blocking(move || crate::mrpack::read(&path))
         .await
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| cleanup(ApiError::bad_request(format!("Kein gültiges Modpack: {e}"))))?;
     let version = label.unwrap_or(parsed.version.clone());
-    let (loader, loader_version) = match &parsed.loader {
-        Some(l) => (
-            Some(l.kind.name().to_ascii_lowercase()),
-            Some(l.version.clone()),
-        ),
-        None => (None, None),
-    };
+    let (loader, loader_version) = parsed.loader.clone().unzip();
     let now = db::now();
     sqlx::query(
         "INSERT INTO versions (id, pack_id, version, minecraft, loader, loader_version, channel, changelog, file, size, sha1, sha512, published_at) \

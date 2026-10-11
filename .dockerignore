@@ -1,8 +1,7 @@
 target
 node_modules
-dist
 admin/node_modules
 admin/dist
 .git
-src-tauri/target
+data
 **/*.log

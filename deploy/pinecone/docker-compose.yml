@@ -6,7 +6,7 @@ services:
   pinecone:
     build:
       context: ./src
-      dockerfile: crates/server/Dockerfile
+      dockerfile: Dockerfile
     image: twogg/pinecone-server:latest
     container_name: pinecone-server
     restart: unless-stopped

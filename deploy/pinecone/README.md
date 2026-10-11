@@ -13,7 +13,7 @@ Verwaltungsoberfläche (React-Admin). Ein Container, Daten (SQLite, Modpacks, Bi
 
 ## Deploy
 
-Vom Windows-PC aus (VPN an, SSH-Key wie in AGENTS.md), im Repo auf dem Branch mit `crates/server`.
+Vom Windows-PC aus (VPN an, SSH-Key wie in AGENTS.md), im Server-Repo (`twogg-pinecone-server`).
 Zugangsdaten gehören nicht ins Repo: Einmalig `deploy/pinecone/deploy.local.psd1` anlegen (ist in
 `.gitignore`), sonst fragt das Skript danach:
 

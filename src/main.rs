@@ -11,6 +11,7 @@ mod error;
 mod files;
 mod friends;
 mod markdown;
+mod mrpack;
 mod recommendations;
 mod settings;
 

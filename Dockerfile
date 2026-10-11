@@ -1,5 +1,5 @@
 # TwoGG Pinecone Server: Admin-Oberfläche (React-Admin) + Rust-Server in einem Image.
-# Bauen aus dem Repo-Wurzelverzeichnis:  docker build -f crates/server/Dockerfile -t pinecone-server .
+# Bauen:  docker build -t pinecone-server .
 
 FROM node:22-bookworm-slim AS admin
 WORKDIR /src/admin
@@ -9,17 +9,15 @@ COPY admin/ ./
 RUN npm run build
 
 FROM rust:1.97-bookworm AS server
-# pinecone-core nutzt den Schlüsselbund (keyring) über D-Bus.
-RUN apt-get update && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p pinecone-server \
+    cargo build --release --locked \
     && cp target/release/pinecone-server /usr/local/bin/pinecone-server
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libdbus-1-3 && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --home /data pinecone \
     && mkdir -p /data && chown pinecone /data
 COPY --from=server /usr/local/bin/pinecone-server /usr/local/bin/pinecone-server
