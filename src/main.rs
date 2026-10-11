@@ -3,13 +3,16 @@
 //!
 //! Konfiguration über Umgebungsvariablen (siehe `Config::from_env` und `server/README.md`).
 
-mod admin;
+pub(crate) mod admin;
 mod api;
 mod auth;
 mod db;
 mod error;
 mod files;
+mod friends;
 mod markdown;
+mod recommendations;
+mod settings;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -41,6 +44,8 @@ pub struct Config {
     pub admin_dir: PathBuf,
     /// Gültigkeit von Download-Links in Sekunden.
     pub download_ttl: u64,
+    /// Mojangs Sitzungsserver (Anmeldung für die Freundesliste); in Tests ein Mock.
+    pub session_server: String,
 }
 
 impl Config {
@@ -75,6 +80,8 @@ impl Config {
             download_ttl: var("PINECONE_DOWNLOAD_TTL")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(600),
+            session_server: var("PINECONE_SESSION_SERVER")
+                .unwrap_or_else(|| friends::DEFAULT_SESSION_SERVER.into()),
         })
     }
 }
@@ -86,6 +93,8 @@ pub struct AppState {
     pub secret: Vec<u8>,
     pub sessions: auth::Sessions,
     pub limiter: api::RateLimiter,
+    pub challenges: friends::Challenges,
+    pub http: reqwest::Client,
 }
 
 pub type State = Arc<AppState>;
@@ -101,6 +110,11 @@ pub async fn build_state(config: Config) -> anyhow::Result<State> {
         secret,
         sessions: auth::Sessions::default(),
         limiter: api::RateLimiter::default(),
+        challenges: friends::Challenges::default(),
+        http: reqwest::Client::builder()
+            .user_agent(concat!("pinecone-server/", env!("CARGO_PKG_VERSION")))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?,
     }))
 }
 
@@ -113,7 +127,7 @@ pub fn router(state: State) -> Router {
     Router::new()
         .route("/", get(api::index))
         .route("/health", get(|| async { "ok" }))
-        .nest("/api/v1", api::routes())
+        .nest("/api/v1", api::routes().merge(friends::routes()))
         .nest(
             "/api/admin",
             admin::routes(state.clone()).layer(DefaultBodyLimit::max(MAX_UPLOAD)),

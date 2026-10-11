@@ -19,6 +19,10 @@ struct TestApp {
 }
 
 async fn setup() -> TestApp {
+    setup_with_session("http://127.0.0.1:9".into()).await
+}
+
+async fn setup_with_session(session_server: String) -> TestApp {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {
         addr: "127.0.0.1:0".parse().unwrap(),
@@ -28,6 +32,7 @@ async fn setup() -> TestApp {
         admin_password_hash: crate::auth::hash_password("geheimes-passwort").unwrap(),
         admin_dir: dir.path().join("admin"),
         download_ttl: 600,
+        session_server,
     };
     std::fs::create_dir_all(&config.admin_dir).unwrap();
     std::fs::write(config.admin_dir.join("index.html"), "<html>admin</html>").unwrap();
@@ -448,4 +453,237 @@ async fn news_and_images() {
     );
     let (_, stats) = app.json("GET", "/api/admin/stats", t, None).await;
     assert_eq!(stats["news"], 4);
+}
+
+/// Nachgebauter Mojang-Sitzungsserver: kennt Alice und Bob, sobald sie sich mit einer Server-ID
+/// „angemeldet“ haben (hier: jede Server-ID mit 32 Zeichen).
+async fn mock_mojang() -> String {
+    use axum::extract::Query;
+    use axum::routing::get;
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Q {
+        username: String,
+        server_id: String,
+    }
+    let app = axum::Router::new().route(
+        "/session/minecraft/hasJoined",
+        get(|Query(q): Query<Q>| async move {
+            let id = match q.username.as_str() {
+                "Alice" => "11111111111111111111111111111111",
+                "Bob" => "22222222222222222222222222222222",
+                _ => return (StatusCode::NO_CONTENT, String::new()),
+            };
+            if q.server_id.len() != 32 {
+                return (StatusCode::NO_CONTENT, String::new());
+            }
+            (
+                StatusCode::OK,
+                json!({ "id": id, "name": q.username }).to_string(),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+async fn player_login(t: &TestApp, name: &str) -> String {
+    let (status, c) = t.json("POST", "/api/v1/auth/challenge", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let server_id = c["serverId"].as_str().unwrap().to_string();
+    let (status, v) = t
+        .json(
+            "POST",
+            "/api/v1/auth/verify",
+            None,
+            Some(json!({ "username": name, "serverId": server_id })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    // Dieselbe Server-ID gilt nur einmal.
+    let (again, _) = t
+        .json(
+            "POST",
+            "/api/v1/auth/verify",
+            None,
+            Some(json!({ "username": name, "serverId": server_id })),
+        )
+        .await;
+    assert_eq!(again, StatusCode::BAD_REQUEST);
+    v["token"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn friends_and_presence() {
+    let t = setup_with_session(mock_mojang().await).await;
+    let (status, _) = t.json("GET", "/api/v1/friends", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Unbekannter Account wird von „Mojang“ abgelehnt.
+    let (_, c) = t.json("POST", "/api/v1/auth/challenge", None, None).await;
+    let (status, _) = t
+        .json(
+            "POST",
+            "/api/v1/auth/verify",
+            None,
+            Some(json!({ "username": "Mallory", "serverId": c["serverId"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let alice = player_login(&t, "Alice").await;
+    let (status, v) = t
+        .json(
+            "POST",
+            "/api/v1/friends/requests",
+            Some(&alice),
+            Some(json!({ "name": "bob" })),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "Bob nutzt Pinecone noch nicht: {v}"
+    );
+
+    let bob = player_login(&t, "Bob").await;
+    let (_, v) = t
+        .json(
+            "POST",
+            "/api/v1/friends/requests",
+            Some(&alice),
+            Some(json!({ "name": "bob" })),
+        )
+        .await;
+    assert_eq!(v["status"], "requested");
+    let (_, v) = t.json("GET", "/api/v1/friends", Some(&bob), None).await;
+    assert_eq!(v["incoming"][0]["name"], "Alice");
+
+    // Status ist vor der Freundschaft nicht sichtbar; nach dem Annehmen schon.
+    let (status, _) = t
+        .json("POST", "/api/v1/presence", Some(&alice), Some(json!({ "activity": {
+            "instance": "REVIVAL: Avalon", "version": "Fabric 1.21.11", "server": "mc.twogg.de", "playing": true } })))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = t
+        .json(
+            "POST",
+            "/api/v1/friends/requests/11111111111111111111111111111111/accept",
+            Some(&bob),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, v) = t.json("GET", "/api/v1/friends", Some(&bob), None).await;
+    assert_eq!(v["friends"][0]["name"], "Alice");
+    assert_eq!(v["friends"][0]["online"], true);
+    assert_eq!(v["friends"][0]["activity"]["instance"], "REVIVAL: Avalon");
+    assert!(v["incoming"].as_array().unwrap().is_empty());
+
+    // Entfernen gilt für beide Seiten.
+    let (status, _) = t
+        .json(
+            "DELETE",
+            "/api/v1/friends/22222222222222222222222222222222",
+            Some(&alice),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, v) = t.json("GET", "/api/v1/friends", Some(&bob), None).await;
+    assert!(v["friends"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn game_server_setting() {
+    let t = setup().await;
+    let (_, v) = t.json("GET", "/api/v1/info", None, None).await;
+    assert!(v["gameServer"].is_null());
+    let token = login(&t).await;
+    let (status, v) = t
+        .json(
+            "PUT",
+            "/api/admin/settings/main",
+            Some(&token),
+            Some(json!({ "id": "main", "gameServerName": null, "gameServerAddress": "https://x" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    let (status, _) = t
+        .json(
+            "PUT",
+            "/api/admin/settings/main",
+            Some(&token),
+            Some(json!({ "id": "main", "gameServerName": "", "gameServerAddress": "mc.twogg.de" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, v) = t.json("GET", "/api/v1/info", None, None).await;
+    assert_eq!(
+        v["gameServer"],
+        json!({ "name": "TwoGG Server", "address": "mc.twogg.de" })
+    );
+}
+
+#[tokio::test]
+async fn recommendations_and_event_link() {
+    let t = setup().await;
+    let token = login(&t).await;
+    let (status, v) = t
+        .json(
+            "POST",
+            "/api/admin/recommendations",
+            Some(&token),
+            Some(json!({ "projectType": "shader", "source": "twogg", "projectId": "x", "title": "Falsch" })),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "TwoGG nur als Modpack: {v}"
+    );
+    let (status, v) = t
+        .json(
+            "POST",
+            "/api/admin/recommendations",
+            Some(&token),
+            Some(json!({ "projectType": "shader", "source": "modrinth", "projectId": "complementary-reimagined",
+                "title": "WINTERLAND-Shader", "subtitle": "Schneelicht für das Winter-Event", "motif": "snowflake", "subtitle2": null })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let (_, list) = t
+        .json("GET", "/api/v1/recommendations?type=shader", None, None)
+        .await;
+    assert_eq!(list[0]["title"], "WINTERLAND-Shader");
+    assert_eq!(list[0]["motif"], "snowflake");
+    let (_, empty) = t
+        .json("GET", "/api/v1/recommendations?type=mod", None, None)
+        .await;
+    assert!(empty.as_array().unwrap().is_empty());
+
+    let (status, v) = t
+        .json(
+            "POST",
+            "/api/admin/packs",
+            Some(&token),
+            Some(
+                json!({ "id": "avalon", "title": "Avalon Event-Pack", "visibility": "public",
+                "eventId": "ca7acfe0-fc10-44e4-a477-96b64c670631" }),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["eventId"], "ca7acfe0-fc10-44e4-a477-96b64c670631");
+    let (status, _) = t
+        .json(
+            "PUT",
+            "/api/admin/packs/avalon",
+            Some(&token),
+            Some(json!({ "title": "Avalon", "eventId": "../x" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

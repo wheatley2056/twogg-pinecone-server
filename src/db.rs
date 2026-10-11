@@ -8,7 +8,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{FromRow, SqlitePool};
 
 /// Schemaänderungen nur anhängen, nie bestehende ändern.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE packs (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
@@ -49,7 +50,65 @@ CREATE TABLE news (
     visible      INTEGER NOT NULL DEFAULT 1,
     published_at INTEGER NOT NULL
 );
-"#];
+"#,
+    r#"
+-- Einstellungen aus der Admin-Seite (z. B. TwoGG-Server für den Launcher)
+CREATE TABLE settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+-- Freundesliste: Spieler sind Minecraft-Accounts, nachgewiesen über Mojangs Sitzungsserver
+CREATE TABLE players (
+    uuid       TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    name_lower TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_seen  INTEGER NOT NULL DEFAULT 0,
+    -- JSON: was der Spieler gerade macht (nur für Freunde sichtbar)
+    activity   TEXT
+);
+CREATE INDEX players_name ON players(name_lower);
+CREATE TABLE player_sessions (
+    token_hash TEXT PRIMARY KEY,
+    uuid       TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL
+);
+CREATE TABLE friend_requests (
+    from_uuid  TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    to_uuid    TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (from_uuid, to_uuid)
+);
+-- Freundschaft einmal gespeichert, mit a_uuid < b_uuid
+CREATE TABLE friendships (
+    a_uuid     TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    b_uuid     TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (a_uuid, b_uuid)
+);
+"#,
+    r#"
+-- Zuordnung eines TwoGG-Packs zu einem Event auf twogg.app
+ALTER TABLE packs ADD COLUMN event_id TEXT;
+-- TwoGG-Auswahl in Entdecken: kuratierte Projekte je Inhaltsart
+CREATE TABLE recommendations (
+    id           TEXT PRIMARY KEY,
+    -- modpack, mod, resourcepack, shader, datapack
+    project_type TEXT NOT NULL,
+    -- twogg (Pack-ID), modrinth (Projekt-ID/Slug), curseforge (Projekt-ID)
+    source       TEXT NOT NULL,
+    project_id   TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    subtitle     TEXT NOT NULL DEFAULT '',
+    icon         TEXT,
+    -- Motiv aus dem Design-System, wenn kein Bild
+    motif        TEXT,
+    sort_order   INTEGER NOT NULL DEFAULT 0,
+    visible      INTEGER NOT NULL DEFAULT 1,
+    created_at   INTEGER NOT NULL
+);
+"#,
+];
 
 pub async fn connect(path: &Path) -> anyhow::Result<SqlitePool> {
     let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))?
@@ -109,6 +168,24 @@ pub struct Pack {
     pub sort_order: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Event auf twogg.app, zu dem das Pack gehört.
+    pub event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct Recommendation {
+    pub id: String,
+    pub project_type: String,
+    pub source: String,
+    pub project_id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub icon: Option<String>,
+    pub motif: Option<String>,
+    pub sort_order: i64,
+    pub visible: bool,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
