@@ -61,3 +61,7 @@ API bitte rückwärtskompatibel halten, da ältere Launcher-Versionen im Umlauf 
 ## Deploy
 
 Docker-Stack auf core01 mit Nginx Proxy Manager und Backup: [deploy/pinecone/README.md](deploy/pinecone/README.md).
+
+## Lizenz
+
+MIT oder Apache-2.0, nach Wahl ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)).

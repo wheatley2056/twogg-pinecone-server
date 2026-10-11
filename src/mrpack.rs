@@ -47,7 +47,7 @@ struct Env {
 pub struct Mrpack {
     pub version: String,
     pub minecraft: String,
-    /// Loader in Kleinbuchstaben (`fabric`, `quilt`) und seine Version.
+    /// Loader in Kleinbuchstaben (`fabric`, `quilt`, `forge`, `neoforge`) und seine Version.
     pub loader: Option<(String, String)>,
 }
 
@@ -92,21 +92,15 @@ pub fn read(path: &Path) -> Result<Mrpack, String> {
         .get("minecraft")
         .cloned()
         .ok_or("Modpack nennt keine Minecraft-Version")?;
-    for (dep, name) in [("forge", "Forge"), ("neoforge", "NeoForge")] {
-        if index.dependencies.contains_key(dep) {
-            return Err(format!(
-                "Dieses Modpack braucht {name}; Pinecone unterstützt bisher Fabric und Quilt"
-            ));
-        }
-    }
-    let loader = match (
-        index.dependencies.get("fabric-loader"),
-        index.dependencies.get("quilt-loader"),
-    ) {
-        (_, Some(v)) => Some(("quilt".to_string(), v.clone())),
-        (Some(v), None) => Some(("fabric".to_string(), v.clone())),
-        (None, None) => None,
-    };
+    let deps = &index.dependencies;
+    let loader = [
+        ("neoforge", "neoforge"),
+        ("forge", "forge"),
+        ("quilt-loader", "quilt"),
+        ("fabric-loader", "fabric"),
+    ]
+    .into_iter()
+    .find_map(|(dep, name)| deps.get(dep).map(|v| (name.to_string(), v.clone())));
     for f in &index.files {
         if f.env.as_ref().is_some_and(|e| e.client == "unsupported") {
             continue;
@@ -139,6 +133,36 @@ pub fn read(path: &Path) -> Result<Mrpack, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pack(deps: &str) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut zip = zip::ZipWriter::new(file.reopen().unwrap());
+        zip.start_file(INDEX, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        write!(
+            zip,
+            r#"{{"formatVersion":1,"game":"minecraft","versionId":"1.0","name":"P","files":[],"dependencies":{deps}}}"#
+        )
+        .unwrap();
+        zip.finish().unwrap();
+        file
+    }
+
+    #[test]
+    fn reads_loaders() {
+        let forge = pack(r#"{"minecraft":"1.20.1","forge":"47.3.0"}"#);
+        assert_eq!(
+            read(forge.path()).unwrap().loader,
+            Some(("forge".into(), "47.3.0".into()))
+        );
+        let neo = pack(r#"{"minecraft":"1.21.1","neoforge":"21.1.77"}"#);
+        assert_eq!(read(neo.path()).unwrap().loader.unwrap().0, "neoforge");
+        let quilt = pack(r#"{"minecraft":"1.21.1","fabric-loader":"0.16","quilt-loader":"0.26"}"#);
+        assert_eq!(read(quilt.path()).unwrap().loader.unwrap().0, "quilt");
+        let vanilla = pack(r#"{"minecraft":"1.21.1"}"#);
+        assert_eq!(read(vanilla.path()).unwrap().loader, None);
+    }
 
     #[test]
     fn rejects_unsafe_paths() {
