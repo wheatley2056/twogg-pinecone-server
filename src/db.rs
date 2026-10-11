@@ -87,6 +87,27 @@ CREATE TABLE friendships (
     PRIMARY KEY (a_uuid, b_uuid)
 );
 "#,
+    r#"
+-- Zuordnung eines TwoGG-Packs zu einem Event auf twogg.app
+ALTER TABLE packs ADD COLUMN event_id TEXT;
+-- TwoGG-Auswahl in Entdecken: kuratierte Projekte je Inhaltsart
+CREATE TABLE recommendations (
+    id           TEXT PRIMARY KEY,
+    -- modpack, mod, resourcepack, shader, datapack
+    project_type TEXT NOT NULL,
+    -- twogg (Pack-ID), modrinth (Projekt-ID/Slug), curseforge (Projekt-ID)
+    source       TEXT NOT NULL,
+    project_id   TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    subtitle     TEXT NOT NULL DEFAULT '',
+    icon         TEXT,
+    -- Motiv aus dem Design-System, wenn kein Bild
+    motif        TEXT,
+    sort_order   INTEGER NOT NULL DEFAULT 0,
+    visible      INTEGER NOT NULL DEFAULT 1,
+    created_at   INTEGER NOT NULL
+);
+"#,
 ];
 
 pub async fn connect(path: &Path) -> anyhow::Result<SqlitePool> {
@@ -147,6 +168,24 @@ pub struct Pack {
     pub sort_order: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Event auf twogg.app, zu dem das Pack gehört.
+    pub event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct Recommendation {
+    pub id: String,
+    pub project_type: String,
+    pub source: String,
+    pub project_id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub icon: Option<String>,
+    pub motif: Option<String>,
+    pub sort_order: i64,
+    pub visible: bool,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

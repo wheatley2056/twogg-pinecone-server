@@ -35,6 +35,7 @@ async function prepare(resource: string, data: Record<string, unknown>) {
   const out = { ...data };
   if (resource === "packs" && "icon" in out) out.icon = await uploadImage(out.icon as Upload);
   if (resource === "news" && "image" in out) out.image = await uploadImage(out.image as Upload);
+  if (resource === "recommendations" && "icon" in out) out.icon = await uploadImage(out.icon as Upload);
   return out;
 }
 

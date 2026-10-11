@@ -33,6 +33,16 @@ pub fn routes(_state: State) -> Router<State> {
             get(get_version).put(update_version).delete(delete_version),
         )
         .route(
+            "/recommendations",
+            get(crate::recommendations::list_admin).post(crate::recommendations::create),
+        )
+        .route(
+            "/recommendations/{id}",
+            get(crate::recommendations::get)
+                .put(crate::recommendations::update)
+                .delete(crate::recommendations::delete),
+        )
+        .route(
             "/settings/main",
             get(crate::settings::get).put(crate::settings::put),
         )
@@ -140,7 +150,7 @@ async fn next_field(
 // ---------- Listen im React-Admin-Format ----------
 
 #[derive(Deserialize, Default)]
-struct ListQuery {
+pub(crate) struct ListQuery {
     /// `["feld","ASC"]`
     sort: Option<String>,
     /// `[0,24]`
@@ -149,17 +159,21 @@ struct ListQuery {
     filter: Option<String>,
 }
 
-struct ListParams {
+pub(crate) struct ListParams {
     sort: String,
     desc: bool,
-    offset: i64,
+    pub(crate) offset: i64,
     limit: i64,
     filter: serde_json::Map<String, Value>,
 }
 
 impl ListQuery {
     /// `sortable`: erlaubte Felder (API-Name → Spalte); das erste ist der Standard.
-    fn parse(&self, sortable: &[(&str, &str)], default_desc: bool) -> ApiResult<ListParams> {
+    pub(crate) fn parse(
+        &self,
+        sortable: &[(&str, &str)],
+        default_desc: bool,
+    ) -> ApiResult<ListParams> {
         let bad = |what: &str| ApiError::bad_request(format!("Ungültiger Parameter {what}"));
         let (mut sort, mut desc) = (sortable[0].1.to_string(), default_desc);
         if let Some(s) = &self.sort {
@@ -192,7 +206,7 @@ impl ListQuery {
     }
 }
 
-fn content_range(resource: &str, offset: i64, count: usize, total: i64) -> HeaderMap {
+pub(crate) fn content_range(resource: &str, offset: i64, count: usize, total: i64) -> HeaderMap {
     let end = if count == 0 {
         offset
     } else {
@@ -248,7 +262,7 @@ fn push_filters<'a>(
     }
 }
 
-async fn list<T>(
+pub(crate) async fn list<T>(
     state: &State,
     table: &str,
     p: &ListParams,
@@ -374,9 +388,27 @@ struct PackInput {
     featured: bool,
     #[serde(default, deserialize_with = "null_default")]
     sort_order: i64,
+    /// twogg.app-Event-ID (UUID); leer = keinem Event zugeordnet.
+    #[serde(default)]
+    event_id: Option<String>,
 }
 
-fn check_media(name: &Option<String>) -> ApiResult<()> {
+/// twogg.app-Event-IDs sind UUIDs; leer heißt „kein Event“.
+fn event_id(input: &Option<String>) -> ApiResult<Option<String>> {
+    match input.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(id)
+            if id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') =>
+        {
+            Ok(Some(id.to_string()))
+        }
+        Some(_) => Err(ApiError::bad_request(
+            "Ungültige Event-ID (die UUID aus dem twogg.app-Link)",
+        )),
+    }
+}
+
+pub(crate) fn check_media(name: &Option<String>) -> ApiResult<()> {
     match name {
         Some(n) if n.contains(['/', '\\']) || n.starts_with('.') => {
             Err(ApiError::bad_request("Ungültiger Bildname"))
@@ -400,10 +432,11 @@ async fn create_pack(
         return Err(ApiError::bad_request("Bitte einen Titel angeben"));
     }
     check_media(&input.icon)?;
+    let event = event_id(&input.event_id)?;
     let now = db::now();
     let result = sqlx::query(
-        "INSERT INTO packs (id, title, summary, description, icon, visibility, featured, sort_order, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO packs (id, title, summary, description, icon, visibility, featured, sort_order, created_at, updated_at, event_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(input.title.trim())
@@ -415,6 +448,7 @@ async fn create_pack(
     .bind(input.sort_order)
     .bind(now)
     .bind(now)
+    .bind(&event)
     .execute(&state.db)
     .await;
     if let Err(sqlx::Error::Database(e)) = &result
@@ -438,9 +472,10 @@ async fn update_pack(
         return Err(ApiError::bad_request("Bitte einen Titel angeben"));
     }
     check_media(&input.icon)?;
+    let event = event_id(&input.event_id)?;
     let done = sqlx::query(
         "UPDATE packs SET title = ?, summary = ?, description = ?, icon = ?, visibility = ?, \
-         featured = ?, sort_order = ?, updated_at = ? WHERE id = ?",
+         featured = ?, sort_order = ?, updated_at = ?, event_id = ? WHERE id = ?",
     )
     .bind(input.title.trim())
     .bind(&input.summary)
@@ -450,6 +485,7 @@ async fn update_pack(
     .bind(input.featured)
     .bind(input.sort_order)
     .bind(db::now())
+    .bind(&event)
     .bind(&id)
     .execute(&state.db)
     .await?;

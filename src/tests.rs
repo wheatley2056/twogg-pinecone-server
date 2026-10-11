@@ -626,3 +626,64 @@ async fn game_server_setting() {
         json!({ "name": "TwoGG Server", "address": "mc.twogg.de" })
     );
 }
+
+#[tokio::test]
+async fn recommendations_and_event_link() {
+    let t = setup().await;
+    let token = login(&t).await;
+    let (status, v) = t
+        .json(
+            "POST",
+            "/api/admin/recommendations",
+            Some(&token),
+            Some(json!({ "projectType": "shader", "source": "twogg", "projectId": "x", "title": "Falsch" })),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "TwoGG nur als Modpack: {v}"
+    );
+    let (status, v) = t
+        .json(
+            "POST",
+            "/api/admin/recommendations",
+            Some(&token),
+            Some(json!({ "projectType": "shader", "source": "modrinth", "projectId": "complementary-reimagined",
+                "title": "WINTERLAND-Shader", "subtitle": "Schneelicht für das Winter-Event", "motif": "snowflake", "subtitle2": null })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let (_, list) = t
+        .json("GET", "/api/v1/recommendations?type=shader", None, None)
+        .await;
+    assert_eq!(list[0]["title"], "WINTERLAND-Shader");
+    assert_eq!(list[0]["motif"], "snowflake");
+    let (_, empty) = t
+        .json("GET", "/api/v1/recommendations?type=mod", None, None)
+        .await;
+    assert!(empty.as_array().unwrap().is_empty());
+
+    let (status, v) = t
+        .json(
+            "POST",
+            "/api/admin/packs",
+            Some(&token),
+            Some(
+                json!({ "id": "avalon", "title": "Avalon Event-Pack", "visibility": "public",
+                "eventId": "ca7acfe0-fc10-44e4-a477-96b64c670631" }),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["eventId"], "ca7acfe0-fc10-44e4-a477-96b64c670631");
+    let (status, _) = t
+        .json(
+            "PUT",
+            "/api/admin/packs/avalon",
+            Some(&token),
+            Some(json!({ "title": "Avalon", "eventId": "../x" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

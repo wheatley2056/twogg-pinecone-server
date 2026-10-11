@@ -3,7 +3,7 @@
 //!
 //! Konfiguration über Umgebungsvariablen (siehe `Config::from_env` und `server/README.md`).
 
-mod admin;
+pub(crate) mod admin;
 mod api;
 mod auth;
 mod db;
@@ -11,6 +11,7 @@ mod error;
 mod files;
 mod friends;
 mod markdown;
+mod recommendations;
 mod settings;
 
 use std::net::SocketAddr;

@@ -30,6 +30,7 @@ pub fn routes() -> axum::Router<State> {
         .route("/info", get(info))
         .route("/news", get(news))
         .route("/packs", get(packs))
+        .route("/recommendations", get(crate::recommendations::list_public))
         .route("/packs/{id}", get(pack))
         .route(
             "/packs/{id}/versions/{version}/download",
@@ -172,6 +173,8 @@ pub struct PackDto {
     description_html: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     versions: Option<Vec<VersionDto>>,
+    /// Event auf twogg.app, zu dem das Pack gehört.
+    event_id: Option<String>,
 }
 
 fn pack_dto(base: &str, p: Pack, versions: Vec<Version>, full: bool) -> PackDto {
@@ -194,6 +197,7 @@ fn pack_dto(base: &str, p: Pack, versions: Vec<Version>, full: bool) -> PackDto 
         updated_at: p.updated_at,
         downloads,
         latest,
+        event_id: p.event_id,
     }
 }
 

@@ -78,6 +78,12 @@ const PackFields = ({ create = false }: { create?: boolean }) => (
     <SelectInput source="visibility" choices={VISIBILITY} defaultValue="hidden" validate={required()} />
     <BooleanInput source="featured" helperText="Oben im Launcher zeigen" />
     <NumberInput source="sortOrder" helperText="Kleinere Zahl = weiter oben" />
+    <TextInput
+      source="eventId"
+      label="twogg.app-Event"
+      fullWidth
+      helperText="Optional: UUID aus dem Event-Link auf twogg.app (twogg.app/events/<UUID>). Der Launcher bietet das Pack dann auf der Event-Seite an."
+    />
   </>
 );
 

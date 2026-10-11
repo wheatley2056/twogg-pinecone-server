@@ -3,6 +3,7 @@ import ExtensionIcon from "@mui/icons-material/Extension";
 import NewspaperIcon from "@mui/icons-material/Newspaper";
 import LayersIcon from "@mui/icons-material/Layers";
 import SettingsIcon from "@mui/icons-material/Settings";
+import StarIcon from "@mui/icons-material/Star";
 import { authProvider } from "./authProvider";
 import { dataProvider } from "./dataProvider";
 import { i18nProvider } from "./i18n";
@@ -11,6 +12,7 @@ import { PackCreate, PackEdit, PackList } from "./resources/packs";
 import { VersionCreate, VersionEdit, VersionList } from "./resources/versions";
 import { NewsCreate, NewsEdit, NewsList } from "./resources/news";
 import { SettingsEdit, SettingsRedirect } from "./resources/settings";
+import { RecommendationCreate, RecommendationEdit, RecommendationList } from "./resources/recommendations";
 
 // Harz aus dem Pinecone-Design-System als Primärfarbe.
 const accent = { palette: { primary: { main: "#e9a23b" } } };
@@ -33,6 +35,15 @@ export default function App() {
       <Resource name="packs" list={PackList} create={PackCreate} edit={PackEdit} icon={ExtensionIcon} recordRepresentation="title" />
       <Resource name="versions" list={VersionList} create={VersionCreate} edit={VersionEdit} icon={LayersIcon} recordRepresentation="version" />
       <Resource name="news" list={NewsList} create={NewsCreate} edit={NewsEdit} icon={NewspaperIcon} recordRepresentation="title" />
+      <Resource
+        name="recommendations"
+        list={RecommendationList}
+        create={RecommendationCreate}
+        edit={RecommendationEdit}
+        icon={StarIcon}
+        options={{ label: "TwoGG-Auswahl" }}
+        recordRepresentation="title"
+      />
       <Resource name="settings" list={SettingsRedirect} edit={SettingsEdit} icon={SettingsIcon} options={{ label: "Einstellungen" }} />
     </Admin>
   );
