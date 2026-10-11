@@ -1,0 +1,31 @@
+# TwoGG Pinecone Server auf core01 (/opt/stacks/pinecone).
+# Öffentlich über Nginx Proxy Manager: pinecone.twogg.app → http://${BIND_IP}:${PORT}
+name: pinecone
+
+services:
+  pinecone:
+    build:
+      context: ./src
+      dockerfile: crates/server/Dockerfile
+    image: twogg/pinecone-server:latest
+    container_name: pinecone-server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PINECONE_PUBLIC_URL: ${PINECONE_PUBLIC_URL:-https://pinecone.twogg.app}
+    volumes:
+      - data:/data
+    ports:
+      # Nur auf der internen/VPN-IP lauschen (BIND_IP in .env); NPM leitet die öffentliche Domain hierher weiter.
+      - "${BIND_IP:?BIND_IP in .env setzen}:${PORT:-8095}:8080"
+    healthcheck:
+      test: ["CMD", "pinecone-server", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  data:

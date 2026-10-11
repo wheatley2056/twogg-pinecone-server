@@ -1,0 +1,39 @@
+[package]
+name = "pinecone-server"
+description = "TwoGG Pinecone – Server für Neuigkeiten und exklusive Modpacks, mit Admin-Oberfläche"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pinecone-server"
+path = "src/main.rs"
+
+[dependencies]
+pinecone-core.workspace = true
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { workspace = true, features = ["signal"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "limit", "set-header"] }
+tower = { version = "0.5", features = ["util"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+sha1.workspace = true
+sha2 = "0.10"
+hmac = "0.12"
+argon2 = "0.5"
+rand = "0.8"
+base64.workspace = true
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+anyhow.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+zip.workspace = true
+http-body-util = "0.1"
