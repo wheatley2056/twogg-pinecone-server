@@ -47,16 +47,35 @@ struct Info {
     name: &'static str,
     version: &'static str,
     packs: i64,
+    /// Community-Server für den Schnellbeitritt im Launcher (in der Admin-Seite gepflegt).
+    game_server: Option<GameServer>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameServer {
+    name: String,
+    address: String,
 }
 
 async fn info(AxumState(state): AxumState<State>) -> ApiResult<Json<Info>> {
     let (packs,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM packs WHERE visibility = 'public'")
         .fetch_one(&state.db)
         .await?;
+    let settings = crate::settings::load(&state).await?;
+    let game_server = (!settings.game_server_address.is_empty()).then(|| GameServer {
+        name: if settings.game_server_name.is_empty() {
+            "TwoGG Server".into()
+        } else {
+            settings.game_server_name
+        },
+        address: settings.game_server_address,
+    });
     Ok(Json(Info {
         name: "TwoGG Pinecone",
         version: env!("CARGO_PKG_VERSION"),
         packs,
+        game_server,
     }))
 }
 

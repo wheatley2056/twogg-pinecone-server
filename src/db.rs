@@ -8,7 +8,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{FromRow, SqlitePool};
 
 /// Schemaänderungen nur anhängen, nie bestehende ändern.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE packs (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
@@ -49,7 +50,44 @@ CREATE TABLE news (
     visible      INTEGER NOT NULL DEFAULT 1,
     published_at INTEGER NOT NULL
 );
-"#];
+"#,
+    r#"
+-- Einstellungen aus der Admin-Seite (z. B. TwoGG-Server für den Launcher)
+CREATE TABLE settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+-- Freundesliste: Spieler sind Minecraft-Accounts, nachgewiesen über Mojangs Sitzungsserver
+CREATE TABLE players (
+    uuid       TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    name_lower TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_seen  INTEGER NOT NULL DEFAULT 0,
+    -- JSON: was der Spieler gerade macht (nur für Freunde sichtbar)
+    activity   TEXT
+);
+CREATE INDEX players_name ON players(name_lower);
+CREATE TABLE player_sessions (
+    token_hash TEXT PRIMARY KEY,
+    uuid       TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL
+);
+CREATE TABLE friend_requests (
+    from_uuid  TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    to_uuid    TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (from_uuid, to_uuid)
+);
+-- Freundschaft einmal gespeichert, mit a_uuid < b_uuid
+CREATE TABLE friendships (
+    a_uuid     TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    b_uuid     TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (a_uuid, b_uuid)
+);
+"#,
+];
 
 pub async fn connect(path: &Path) -> anyhow::Result<SqlitePool> {
     let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))?

@@ -32,6 +32,10 @@ pub fn routes(_state: State) -> Router<State> {
             "/versions/{id}",
             get(get_version).put(update_version).delete(delete_version),
         )
+        .route(
+            "/settings/main",
+            get(crate::settings::get).put(crate::settings::put),
+        )
         .route("/news", get(list_news).post(create_news))
         .route(
             "/news/{id}",

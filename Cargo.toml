@@ -32,6 +32,7 @@ base64.workspace = true
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 anyhow.workspace = true
 futures.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
