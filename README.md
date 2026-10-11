@@ -36,6 +36,7 @@ Prüfen: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `carg
 | `PINECONE_ADMIN_DIR` | Gebaute Admin-Oberfläche (`admin/dist`) |
 | `PINECONE_DOWNLOAD_TTL` | Gültigkeit der Download-Links in Sekunden (Standard 600) |
 | `PINECONE_SESSION_SERVER` | Mojang-Session-Server für die Freunde-Anmeldung (Standard `https://sessionserver.mojang.com`) |
+| `PINECONE_LAUNCHER_URL` | Download-Seite des Launchers, verlinkt auf den Modpack-Seiten (Standard: Landing Page auf GitHub Pages) |
 
 Datenbank-Migrationen laufen beim Start automatisch.
 
@@ -51,6 +52,17 @@ Datenbank-Migrationen laufen beim Start automatisch.
 | `POST /auth/challenge`, `POST /auth/verify` | Freunde-Anmeldung mit dem Minecraft-Konto (Mojang `join` / `hasJoined`), Sitzung 30 Tage |
 | `GET /me`, `POST /presence` | eigenes Profil, Präsenz mit Aktivität (online = letzte 90 s) |
 | `GET /friends`, `POST /friends/requests`, `POST /friends/requests/{uuid}/accept`, `DELETE /friends/requests/{uuid}`, `DELETE /friends/{uuid}` | Freunde und Anfragen (per Spielername) |
+
+`GET /packs/{id}` in der API enthält `pageUrl`, die öffentliche Seite des Packs.
+
+## Modpack-Seiten
+
+`/packs` listet die öffentlichen TwoGG-Modpacks, `/packs/{id}` ist die Seite eines Packs (auch für
+ungelistete Packs, nicht für versteckte), aufgebaut wie eine CurseForge-Projektseite: Kopf mit Logo
+und Kennzahlen, Tabs „Beschreibung“ und „Versionen“, Seitenleiste mit Details und Event-Link.
+„In Pinecone installieren“ öffnet `pinecone://twogg/<pack>` bzw. je Version
+`pinecone://twogg/<pack>/<version>` im Launcher. `/` leitet auf `/packs` weiter. Die Seiten laden
+keine Skripte und nur eigene Schriften (`assets/fonts`, OFL), Vorschau-Tags für Discord sind gesetzt.
 
 `GET /dl/{token}` liefert die `.mrpack`-Datei. Die Admin-API liegt unter `/api/admin` (Sitzung per
 Cookie, Sperre nach Fehlversuchen).

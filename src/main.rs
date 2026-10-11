@@ -12,6 +12,7 @@ mod files;
 mod friends;
 mod markdown;
 mod mrpack;
+mod pages;
 mod recommendations;
 mod settings;
 
@@ -47,6 +48,8 @@ pub struct Config {
     pub download_ttl: u64,
     /// Mojangs Sitzungsserver (Anmeldung für die Freundesliste); in Tests ein Mock.
     pub session_server: String,
+    /// Download-Seite des Launchers (verlinkt auf den Modpack-Seiten).
+    pub launcher_url: String,
 }
 
 impl Config {
@@ -83,6 +86,8 @@ impl Config {
                 .unwrap_or(600),
             session_server: var("PINECONE_SESSION_SERVER")
                 .unwrap_or_else(|| friends::DEFAULT_SESSION_SERVER.into()),
+            launcher_url: var("PINECONE_LAUNCHER_URL")
+                .unwrap_or_else(|| pages::DEFAULT_LAUNCHER_URL.into()),
         })
     }
 }
@@ -126,7 +131,11 @@ pub fn router(state: State) -> Router {
         ServeDir::new(&admin_dir).fallback(ServeFile::new(admin_dir.join("index.html")));
     let media = ServeDir::new(files::media_dir(&state.config.data_dir));
     Router::new()
-        .route("/", get(api::index))
+        .route(
+            "/",
+            get(|| async { axum::response::Redirect::temporary("/packs") }),
+        )
+        .merge(pages::routes())
         .route("/health", get(|| async { "ok" }))
         .nest("/api/v1", api::routes().merge(friends::routes()))
         .nest(

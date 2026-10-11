@@ -33,6 +33,7 @@ async fn setup_with_session(session_server: String) -> TestApp {
         admin_dir: dir.path().join("admin"),
         download_ttl: 600,
         session_server,
+        launcher_url: "https://launcher.test/".into(),
     };
     std::fs::create_dir_all(&config.admin_dir).unwrap();
     std::fs::write(config.admin_dir.join("index.html"), "<html>admin</html>").unwrap();
@@ -686,4 +687,96 @@ async fn recommendations_and_event_link() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn public_pack_pages() {
+    let app = setup().await;
+    let token = login(&app).await;
+    let t = Some(token.as_str());
+    let page = |uri: &str| {
+        let req = Request::get(uri).body(Body::empty()).unwrap();
+        let app = &app;
+        async move {
+            let (status, headers, body) = app.send(req).await;
+            (status, headers, String::from_utf8_lossy(&body).into_owned())
+        }
+    };
+
+    let (status, body) = app
+        .json(
+            "POST",
+            "/api/admin/packs",
+            t,
+            Some(json!({ "id": "horizons", "title": "Horizons <Unbound>", "summary": "Unser Server-Pack",
+                         "description": "# Willkommen\n<script>alert(1)</script>", "visibility": "unlisted",
+                         "eventId": "3f2b6c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let pack = mrpack();
+    let (ct, body) = multipart(&[("packId", "horizons")], Some(("h.mrpack", &pack)));
+    let (status, _, _) = app
+        .send(
+            Request::post("/api/admin/versions")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, ct)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Ungelistet: Seite per Link erreichbar, aber nicht in der Übersicht.
+    let (status, headers, html) = page("/packs/horizons").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .starts_with("default-src 'none'")
+    );
+    assert!(html.contains("Horizons &lt;Unbound&gt;"), "Titel maskiert");
+    assert!(
+        !html.contains("<script>"),
+        "kein Skript aus der Beschreibung"
+    );
+    assert!(html.contains(r#"href="pinecone://twogg/horizons""#));
+    assert!(
+        html.contains("pinecone://twogg/horizons/"),
+        "Link je Version"
+    );
+    assert!(html.contains("Fabric 1.21.1"));
+    assert!(html.contains("https://twogg.app/events/3f2b6c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f"));
+    assert!(html.contains("https://launcher.test/"));
+    let (_, _, index) = page("/packs").await;
+    assert!(!index.contains("/packs/horizons"));
+
+    let (status, _) = app
+        .json(
+            "PUT",
+            "/api/admin/packs/horizons",
+            t,
+            Some(
+                json!({ "id": "horizons", "title": "Horizons", "summary": "", "description": "",
+                         "visibility": "public" }),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, index) = page("/packs").await;
+    assert!(index.contains(r#"href="/packs/horizons""#));
+    let (_, pack) = app.json("GET", "/api/v1/packs/horizons", None, None).await;
+    assert_eq!(pack["pageUrl"], "https://pinecone.test/packs/horizons");
+
+    let (status, _, _) = page("/packs/gibt-es-nicht").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, headers, _) = page("/assets/figtree-400.woff2").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "font/woff2");
+    let (status, _, _) = page("/assets/../secret.key").await;
+    assert_ne!(status, StatusCode::OK);
+    let (status, headers, _) = page("/").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(headers[header::LOCATION], "/packs");
 }
