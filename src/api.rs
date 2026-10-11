@@ -38,10 +38,6 @@ pub fn routes() -> axum::Router<State> {
         )
 }
 
-pub async fn index() -> &'static str {
-    "TwoGG Pinecone Server. Die Verwaltung liegt unter /admin."
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Info {
@@ -175,6 +171,8 @@ pub struct PackDto {
     versions: Option<Vec<VersionDto>>,
     /// Event auf twogg.app, zu dem das Pack gehört.
     event_id: Option<String>,
+    /// Öffentliche Seite des Packs (`/packs/<id>`).
+    page_url: String,
 }
 
 fn pack_dto(base: &str, p: Pack, versions: Vec<Version>, full: bool) -> PackDto {
@@ -188,6 +186,7 @@ fn pack_dto(base: &str, p: Pack, versions: Vec<Version>, full: bool) -> PackDto 
         .map(VersionDto::from);
     PackDto {
         icon_url: p.icon.as_deref().map(|i| media_url(base, i)),
+        page_url: crate::pages::page_url(base, &p.id),
         description_html: full.then(|| markdown::to_html(&p.description)),
         versions: full.then(|| versions.into_iter().map(VersionDto::from).collect()),
         id: p.id,
