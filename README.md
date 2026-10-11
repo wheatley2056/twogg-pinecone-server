@@ -61,6 +61,8 @@ API bitte rückwärtskompatibel halten, da ältere Launcher-Versionen im Umlauf 
 ## Deploy
 
 Docker-Stack auf core01 mit Nginx Proxy Manager und Backup: [deploy/pinecone/README.md](deploy/pinecone/README.md).
+Updates laufen automatisch: Ein Merge auf `main` baut das Image (`ghcr.io`), core01 holt es
+innerhalb von 5 Minuten, sichert vorher die Datenbank und fällt bei Problemen zurück.
 
 ## Lizenz
 

@@ -6,39 +6,56 @@ Verwaltungsoberfläche (React-Admin). Ein Container, Daten (SQLite, Modpacks, Bi
 
 | | |
 |---|---|
-| Stack | `/opt/stacks/pinecone/` (`docker-compose.yml`, `.env`, `src/`) |
+| Stack | `/opt/stacks/pinecone/` (`docker-compose.yml`, `.env`, `auto-update.sh`, `backups/`) |
 | Container | `pinecone-server`, lauscht auf `<BIND_IP>:8095` (nur VPN/intern) |
 | Öffentlich | `https://pinecone.twogg.app` über Nginx Proxy Manager |
 | Admin | `https://pinecone.twogg.app/admin` (Konto aus `.env`) |
 
-## Deploy
+## Deploy und automatische Updates
 
-Vom Windows-PC aus (VPN an, SSH-Key wie in AGENTS.md), im Server-Repo (`twogg-pinecone-server`).
-Zugangsdaten gehören nicht ins Repo: Einmalig `deploy/pinecone/deploy.local.psd1` anlegen (ist in
+**Wie Updates laufen:** Jeder Merge auf `main` im Server-Repo baut nach grüner CI ein Image
+`ghcr.io/wheatley2056/twogg-pinecone-server:latest` (dazu `:sha-<commit>`). Auf core01 prüft
+`auto-update.sh` per Cron alle 5 Minuten, ob es ein neues Image gibt. Wenn ja:
+
+1. Server anhalten, Datenbank und `secret.key` nach `backups/` sichern (die letzten 10 bleiben),
+2. mit dem neuen Image starten und auf den Healthcheck warten,
+3. wird der Server nicht gesund: Datenbank zurückspielen, vorheriges Image starten und das
+   gescheiterte Image nicht noch einmal versuchen (bis ein neueres kommt).
+
+Datenbank-Migrationen laufen beim Start automatisch. Die kurze Pause (wenige Sekunden) fällt nur
+bei echten Updates an.
+
+**Einmalig einrichten** (Windows-PC, VPN an, SSH-Key wie in AGENTS.md), im Server-Repo.
+Zugangsdaten gehören nicht ins Repo: `deploy/pinecone/deploy.local.psd1` anlegen (ist in
 `.gitignore`), sonst fragt das Skript danach:
 
 ```powershell
 @{ Host = "<VPN-IP von core01>"; User = "<ssh-user>"; Key = "C:\Users\<name>\.ssh\<key>" }
 ```
 
-Dann:
-
 ```powershell
 .\deploy\pinecone\deploy.ps1
 ```
 
-Das Skript packt den aktuellen Commit (`git archive`), lädt ihn nach core01, baut das Image dort
-(`docker compose build`, beim ersten Mal einige Minuten) und startet den Stack. Beim ersten Deploy
-fragt es nach dem Admin-Passwort und legt `/opt/stacks/pinecone/.env` an (`chmod 600`); spätere
-Deploys lassen `.env` und die Daten unangetastet. Der Stack erscheint in Portainer unter „Stacks“
-als extern verwalteter Stack `pinecone`.
+Das Skript lädt `docker-compose.yml`, `.env.example` und `auto-update.sh` nach
+`/opt/stacks/pinecone/`, legt beim ersten Mal `.env` an (fragt nach dem Admin-Passwort, `chmod 600`),
+meldet core01 bei `ghcr.io` an (fragt nach einem GitHub-Token, *Personal access token (classic)* mit
+nur `read:packages`) und trägt den Cronjob ein. Danach startet es einmal `auto-update.sh`. Erneut
+ausführen muss man es nur, wenn sich `docker-compose.yml` oder `auto-update.sh` ändern.
 
-Manuell auf core01 geht dasselbe mit:
+**Auf core01:**
 
 ```bash
-cd /opt/stacks/pinecone && docker compose up -d --build
-docker compose logs -f
+cd /opt/stacks/pinecone
+tail -f auto-update.log            # was das Auto-Update tut
+./auto-update.sh                   # sofort nach Updates sehen
+docker compose logs -f             # Server-Logs
+crontab -l                         # Cronjob prüfen; zum Pausieren die Zeile auskommentieren
 ```
+
+Eine bestimmte Version festhalten: in `.env` `PINECONE_IMAGE=ghcr.io/wheatley2056/twogg-pinecone-server:sha-<commit>`
+setzen und `docker compose up -d`; zurück zum automatischen Stand die Zeile wieder entfernen.
+Ein `.failed-image` im Stack-Ordner zeigt ein Image, das beim letzten Versuch nicht gesund wurde.
 
 ## Nginx Proxy Manager (einmalig)
 
@@ -79,6 +96,7 @@ ohnehin nach 10 Minuten ab).
 | `PINECONE_ADMIN_PASSWORD` / `_HASH` | Passwort im Klartext oder als Argon2-Hash (`docker compose run --rm pinecone hash-password '…'`) |
 | `PINECONE_DOWNLOAD_TTL` | Gültigkeit der Download-Links in Sekunden (Standard 600) |
 | `BIND_IP`, `PORT` | Wo der Container auf core01 lauscht (NPM-Ziel) |
+| `PINECONE_IMAGE` | Optional: festes Image statt `:latest` (siehe oben) |
 
 ## API (für den Launcher)
 

@@ -1,13 +1,12 @@
 # TwoGG Pinecone Server auf core01 (/opt/stacks/pinecone).
 # Öffentlich über Nginx Proxy Manager: pinecone.twogg.app → http://${BIND_IP}:${PORT}
+# Das Image baut GitHub bei jedem Merge auf main; auto-update.sh holt es (Cron, alle 5 Minuten).
 name: pinecone
 
 services:
   pinecone:
-    build:
-      context: ./src
-      dockerfile: Dockerfile
-    image: twogg/pinecone-server:latest
+    # PINECONE_IMAGE nur für den Rückfall auf das vorige Image (auto-update.sh).
+    image: ${PINECONE_IMAGE:-ghcr.io/wheatley2056/twogg-pinecone-server:latest}
     container_name: pinecone-server
     restart: unless-stopped
     env_file: .env
@@ -23,6 +22,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 15s
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
