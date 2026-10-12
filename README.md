@@ -47,7 +47,7 @@ Datenbank-Migrationen laufen beim Start automatisch.
 
 | Endpunkt | |
 |---|---|
-| `GET /info` | Server-Infos, Community-Server (Name, Adresse), `curseforge` (Proxy verfügbar), `legal` (Impressum, Datenschutz, Kontakt) |
+| `GET /info` | Server-Infos, Community-Server (Name, Adresse), `curseforge` (Proxy verfügbar), `legal` (Impressum, Datenschutz, Kontakt), optional `banner` (`id`, `level` info/warning, `text`, `link`, `until`) und `minLauncherVersion` |
 | `GET /news?limit=10` | sichtbare Neuigkeiten (Markdown als HTML) |
 | `GET /packs`, `GET /packs/{id}` | öffentliche Modpacks mit Versionen, optional `eventId` (twogg.app-Event) |
 | `POST /packs/{id}/versions/{version}/download` | signierter Download-Link (Header `X-Pinecone-Client: pinecone/<version>`) |
@@ -94,6 +94,10 @@ keine Skripte und nur eigene Schriften (`assets/fonts`, OFL), Vorschau-Tags für
 
 `GET /dl/{token}` liefert die `.mrpack`-Datei. Die Admin-API liegt unter `/api/admin` (Sitzung per
 Bearer-Token, 12 Stunden gültig, Sperre nach Fehlversuchen).
+
+**Hinweis und Mindestversion:** Unter Einstellungen setzt man einen Hinweis für alle Launcher
+(Info oder Warnung, optional mit Link und Ablaufzeit) und eine Mindestversion. Ältere Launcher
+zeigen „Update nötig“ und laden keine TwoGG-Packs mehr; alles andere funktioniert weiter.
 
 **Admin-Konten:** Das Konto aus `PINECONE_ADMIN_USER`/`PINECONE_ADMIN_PASSWORD(_HASH)` wird bei
 jedem Start als Admin übernommen und bleibt der Notzugang (nicht löschbar, Passwort nur über die
