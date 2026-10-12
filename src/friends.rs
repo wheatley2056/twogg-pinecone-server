@@ -602,6 +602,9 @@ pub async fn cleanup_loop(state: State) {
         if let Err(e) = crate::accounts::cleanup(&state).await {
             tracing::warn!("Aufräumen des Protokolls: {e}");
         }
+        if let Err(e) = crate::serverpack::cleanup(&state).await {
+            tracing::warn!("Aufräumen der Server-Packs: {e}");
+        }
         if let Err(e) = crate::stats::cleanup(&state).await {
             tracing::warn!("Aufräumen der Statistik: {e}");
         }

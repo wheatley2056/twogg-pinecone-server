@@ -37,6 +37,14 @@ pub fn routes(state: State) -> Router<State> {
         .route("/versions/{id}/withdraw", post(withdraw_version))
         .route("/versions/{id}/restore", post(restore_version))
         .route(
+            "/versions/{id}/server-pack",
+            get(crate::serverpack::status).post(crate::serverpack::start),
+        )
+        .route(
+            "/versions/{id}/server-pack/link",
+            post(crate::serverpack::link),
+        )
+        .route(
             "/recommendations",
             get(crate::recommendations::list_admin).post(crate::recommendations::create),
         )
@@ -541,6 +549,7 @@ async fn delete_pack(
     for v in versions {
         let _ = tokio::fs::remove_file(files::packs_dir(&state.config.data_dir).join(v.file)).await;
     }
+    let _ = crate::serverpack::cleanup(&state).await;
     tracing::info!("Pack {id} gelöscht");
     Ok(Json(out))
 }
@@ -735,6 +744,7 @@ async fn delete_version(
         .execute(&state.db)
         .await?;
     let _ = tokio::fs::remove_file(files::packs_dir(&state.config.data_dir).join(&v.file)).await;
+    let _ = crate::serverpack::cleanup(&state).await;
     Ok(Json(v))
 }
 

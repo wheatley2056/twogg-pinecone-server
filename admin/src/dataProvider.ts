@@ -68,11 +68,29 @@ export const dataProvider: DataProvider = {
     const { json } = await httpClient(`${API}/stats`);
     return json as Stats;
   },
+  async serverPack(id: string, build = false) {
+    const { json } = await httpClient(`${API}/versions/${encodeURIComponent(id)}/server-pack`, build ? { method: "POST" } : {});
+    return json as ServerPack;
+  },
+  async serverPackLink(id: string) {
+    const { json } = await httpClient(`${API}/versions/${encodeURIComponent(id)}/server-pack/link`, { method: "POST" });
+    return json.url as string;
+  },
   async getDailyStats(days: number) {
     const { json } = await httpClient(`${API}/stats/daily?days=${days}`);
     return json as DailyStats;
   },
 };
+
+export interface ServerPack {
+  state: "none" | "building" | "ready" | "failed";
+  error?: string | null;
+  createdAt?: number;
+  size?: number;
+  files?: number;
+  removed?: string[];
+  loader?: string | null;
+}
 
 export interface DailySeries {
   key: string;
