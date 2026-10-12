@@ -6,6 +6,10 @@ import { mergeTranslations } from "react-admin";
 
 const de = mergeTranslations(englishMessages, germanMessages, {
   resources: {
+    accounts: {
+      name: "Konto |||| Konten",
+      fields: { id: "Benutzername", role: "Rolle", lastLogin: "Zuletzt angemeldet", createdAt: "Angelegt", password: "Passwort" },
+    },
     packs: {
       name: "Modpack |||| Modpacks",
       fields: {

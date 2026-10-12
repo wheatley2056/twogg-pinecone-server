@@ -1,5 +1,6 @@
-//! Anmeldung für die Admin-Oberfläche: ein Admin-Konto aus der Konfiguration (Argon2-Hash),
-//! Sitzungen als zufällige Bearer-Tokens im Speicher (nach einem Neustart neu anmelden).
+//! Anmeldung für die Admin-Oberfläche: Konten mit Rolle in der Datenbank (Argon2-Hash, siehe
+//! `accounts.rs`), Sitzungen als zufällige Bearer-Tokens im Speicher (nach einem Neustart neu
+//! anmelden).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -37,33 +38,65 @@ pub fn verify_password(hash: &str, password: &str) -> bool {
     })
 }
 
+/// Rolle eines Admin-Kontos (F-63).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// Alles, auch Packs, Einstellungen und Konten.
+    Admin,
+    /// Neuigkeiten, TwoGG-Auswahl und Bilder; alles andere nur lesen.
+    Editor,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Admin => "admin",
+            Role::Editor => "editor",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "admin" => Some(Role::Admin),
+            "editor" => Some(Role::Editor),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Sessions {
-    tokens: Mutex<HashMap<String, (String, Instant)>>,
+    tokens: Mutex<HashMap<String, (String, Role, Instant)>>,
     failures: Mutex<(u32, Option<Instant>)>,
 }
 
 impl Sessions {
-    pub fn create(&self, user: &str) -> String {
+    pub fn create(&self, user: &str, role: Role) -> String {
         let mut raw = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut raw);
         let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
         let mut map = self.tokens.lock().unwrap();
         let now = Instant::now();
-        map.retain(|_, (_, exp)| *exp > now);
-        map.insert(token.clone(), (user.to_string(), now + SESSION_TTL));
+        map.retain(|_, (_, _, exp)| *exp > now);
+        map.insert(token.clone(), (user.to_string(), role, now + SESSION_TTL));
         token
     }
 
-    pub fn user(&self, token: &str) -> Option<String> {
+    pub fn user(&self, token: &str) -> Option<(String, Role)> {
         let map = self.tokens.lock().unwrap();
         map.get(token)
-            .filter(|(_, exp)| *exp > Instant::now())
-            .map(|(u, _)| u.clone())
+            .filter(|(_, _, exp)| *exp > Instant::now())
+            .map(|(u, r, _)| (u.clone(), *r))
     }
 
     pub fn revoke(&self, token: &str) {
         self.tokens.lock().unwrap().remove(token);
+    }
+
+    /// Alle Sitzungen eines Kontos beenden (nach Löschen, Rollen- oder Passwortwechsel).
+    pub fn revoke_user(&self, user: &str) {
+        self.tokens.lock().unwrap().retain(|_, (u, _, _)| u != user);
     }
 
     /// `Err(sekunden)`, solange nach zu vielen Fehlversuchen gesperrt ist.
@@ -92,7 +125,22 @@ impl Sessions {
 /// Angemeldeter Admin (als Extraktor in Admin-Handlern).
 pub struct Admin {
     pub user: String,
+    pub role: Role,
     pub token: String,
+}
+
+impl Admin {
+    /// Nur für die Rolle „Admin“.
+    pub fn require_admin(&self) -> Result<(), ApiError> {
+        if self.role == Role::Admin {
+            Ok(())
+        } else {
+            Err(ApiError::new(
+                axum::http::StatusCode::FORBIDDEN,
+                "Dafür braucht es die Rolle Admin",
+            ))
+        }
+    }
 }
 
 impl FromRequestParts<State> for Admin {
@@ -106,11 +154,11 @@ impl FromRequestParts<State> for Admin {
             .and_then(|v| v.strip_prefix("Bearer "))
             .ok_or_else(ApiError::unauthorized)?
             .to_string();
-        let user = state
+        let (user, role) = state
             .sessions
             .user(&token)
             .ok_or_else(ApiError::unauthorized)?;
-        Ok(Admin { user, token })
+        Ok(Admin { user, role, token })
     }
 }
 
@@ -127,10 +175,14 @@ mod tests {
         assert!(!verify_password("kein-hash", "x"));
 
         let s = Sessions::default();
-        let t = s.create("admin");
-        assert_eq!(s.user(&t).as_deref(), Some("admin"));
+        let t = s.create("admin", Role::Admin);
+        assert_eq!(s.user(&t), Some(("admin".into(), Role::Admin)));
         s.revoke(&t);
         assert_eq!(s.user(&t), None);
+        let a = s.create("lena", Role::Editor);
+        let b = s.create("lena", Role::Editor);
+        s.revoke_user("lena");
+        assert!(s.user(&a).is_none() && s.user(&b).is_none());
 
         for _ in 0..MAX_FAILURES {
             assert!(s.check_lockout().is_ok());

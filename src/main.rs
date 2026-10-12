@@ -3,6 +3,7 @@
 //!
 //! Konfiguration über Umgebungsvariablen (siehe `Config::from_env` und `server/README.md`).
 
+mod accounts;
 pub(crate) mod admin;
 mod api;
 mod auth;
@@ -129,6 +130,7 @@ pub async fn build_state(config: Config) -> anyhow::Result<State> {
     std::fs::create_dir_all(files::packs_dir(&config.data_dir))?;
     std::fs::create_dir_all(files::media_dir(&config.data_dir))?;
     let db = db::connect(&config.data_dir.join("pinecone.db")).await?;
+    accounts::bootstrap(&db, &config).await?;
     let secret = files::load_or_create_secret(&config.data_dir.join("secret.key"))?;
     Ok(Arc::new(AppState {
         config,

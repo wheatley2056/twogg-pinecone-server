@@ -136,6 +136,27 @@ CREATE TABLE sync_shares (
     expires_at INTEGER NOT NULL
 );
 "#,
+    r#"
+-- Admin-Konten mit Rolle (F-63); das Konto aus der Konfiguration wird beim Start übernommen
+CREATE TABLE admin_accounts (
+    username      TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    -- admin, editor
+    role          TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    last_login    INTEGER
+);
+-- Änderungsprotokoll der Admin-API (ein Jahr)
+CREATE TABLE audit_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          INTEGER NOT NULL,
+    username    TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id   TEXT
+);
+CREATE INDEX audit_at ON audit_log(at DESC);
+"#,
 ];
 
 pub async fn connect(path: &Path) -> anyhow::Result<SqlitePool> {

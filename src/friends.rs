@@ -588,6 +588,9 @@ pub async fn cleanup_loop(state: State) {
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(86_400));
     loop {
         tick.tick().await;
+        if let Err(e) = crate::accounts::cleanup(&state).await {
+            tracing::warn!("Aufräumen des Protokolls: {e}");
+        }
         if let Err(e) = crate::social::cleanup(&state).await {
             tracing::warn!("Aufräumen von Einladungen und Freigaben: {e}");
         }

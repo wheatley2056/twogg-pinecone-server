@@ -1,6 +1,7 @@
 import type { AuthProvider } from "react-admin";
 
 const TOKEN = "pinecone.admin.token";
+const ROLE = "pinecone.admin.role";
 
 export const getToken = () => localStorage.getItem(TOKEN);
 
@@ -15,10 +16,12 @@ export const authProvider: AuthProvider = {
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? "Anmeldung fehlgeschlagen");
     localStorage.setItem(TOKEN, body.token);
+    localStorage.setItem(ROLE, body.role ?? "admin");
   },
   async logout() {
     const token = getToken();
     localStorage.removeItem(TOKEN);
+    localStorage.removeItem(ROLE);
     if (token) await fetch("/api/admin/logout", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
   },
   async checkAuth() {
@@ -29,6 +32,10 @@ export const authProvider: AuthProvider = {
       localStorage.removeItem(TOKEN);
       throw new Error("Sitzung abgelaufen");
     }
+  },
+  /** Rolle `admin` oder `editor` (F-63); steuert, welche Menüpunkte es gibt. */
+  async getPermissions() {
+    return localStorage.getItem(ROLE) ?? "admin";
   },
   async getIdentity() {
     const res = await fetch("/api/admin/me", { headers: { Authorization: `Bearer ${getToken()}` } });
