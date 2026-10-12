@@ -68,7 +68,26 @@ export const dataProvider: DataProvider = {
     const { json } = await httpClient(`${API}/stats`);
     return json as Stats;
   },
+  async getDailyStats(days: number) {
+    const { json } = await httpClient(`${API}/stats/daily?days=${days}`);
+    return json as DailyStats;
+  },
 };
+
+export interface DailySeries {
+  key: string;
+  total: number;
+  counts: number[];
+}
+
+/** Tageszähler; `counts[i]` gehört zum Tag `from + i` (Tage seit 1970, UTC). */
+export interface DailyStats {
+  from: number;
+  days: number;
+  active: number[];
+  launchers: DailySeries[];
+  downloads: DailySeries[];
+}
 
 export interface Stats {
   packs: number;

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Card, CardContent, Grid, Typography } from "@mui/material";
 import { Title, useDataProvider } from "react-admin";
 import type { Stats } from "./dataProvider";
+import { Usage } from "./Usage";
 
 const Tile = ({ label, value }: { label: string; value: number | string }) => (
   <Card>
@@ -35,6 +36,9 @@ export const Dashboard = () => {
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <Tile label="Neuigkeiten" value={stats?.news ?? "…"} />
+        </Grid>
+        <Grid size={12}>
+          <Usage />
         </Grid>
         <Grid size={12}>
           <Card>
