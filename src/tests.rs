@@ -1008,3 +1008,200 @@ async fn legal_settings_and_disclaimer() {
     assert!(html.contains(r#"href="https://twogg.app/impressum""#));
     assert!(html.contains("mailto:kontakt@twogg.de"));
 }
+
+#[tokio::test]
+async fn friend_codes_invites_and_sync_shares() {
+    let t = setup_with_session(mock_mojang().await).await;
+    let alice = player_login(&t, "Alice").await;
+    let bob = player_login(&t, "Bob").await;
+
+    // Freundescode: stabil, neu erzeugbar, alter sofort ungültig.
+    let (status, v) = t
+        .json("GET", "/api/v1/friends/code", Some(&alice), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let code = v["code"].as_str().unwrap().to_string();
+    let (_, again) = t
+        .json("GET", "/api/v1/friends/code", Some(&alice), None)
+        .await;
+    assert_eq!(again["code"], code.as_str());
+    let (_, v) = t
+        .json("POST", "/api/v1/friends/code", Some(&alice), None)
+        .await;
+    let fresh = v["code"].as_str().unwrap().to_string();
+    assert_ne!(fresh, code);
+    let (status, _) = t
+        .json(
+            "POST",
+            "/api/v1/friends/requests",
+            Some(&bob),
+            Some(json!({ "code": code })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "alter Code gilt nicht mehr");
+    let (_, v) = t
+        .json(
+            "POST",
+            "/api/v1/friends/requests",
+            Some(&alice),
+            Some(json!({ "code": fresh })),
+        )
+        .await;
+    assert_eq!(
+        v["error"].as_str().map(|e| e.contains("selbst")),
+        Some(true),
+        "{v}"
+    );
+
+    // Einladen geht erst nach der Freundschaft.
+    let invite = json!({ "to": "22222222222222222222222222222222", "server": "mc.twogg.de",
+        "pack": "pinecone://twogg/avalon", "instance": "REVIVAL: Avalon" });
+    let (status, _) = t
+        .json(
+            "POST",
+            "/api/v1/invites",
+            Some(&alice),
+            Some(invite.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Bob schickt per Code (Kleinbuchstaben, Link-Form) eine Anfrage, Alice nimmt an.
+    let link = format!("pinecone://friend/{}", fresh.to_lowercase());
+    let (_, v) = t
+        .json(
+            "POST",
+            "/api/v1/friends/requests",
+            Some(&bob),
+            Some(json!({ "code": link })),
+        )
+        .await;
+    assert_eq!(v["status"], "requested", "{v}");
+    t.json(
+        "POST",
+        "/api/v1/friends/requests/22222222222222222222222222222222/accept",
+        Some(&alice),
+        None,
+    )
+    .await;
+
+    let (status, v) = t
+        .json(
+            "POST",
+            "/api/v1/invites",
+            Some(&alice),
+            Some(invite.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    // Eine neue Einladung ersetzt die alte.
+    let (_, v) = t
+        .json(
+            "POST",
+            "/api/v1/invites",
+            Some(&alice),
+            Some(invite.clone()),
+        )
+        .await;
+    let id = v["id"].as_str().unwrap().to_string();
+    let (_, v) = t.json("GET", "/api/v1/friends", Some(&bob), None).await;
+    let invites = v["invites"].as_array().unwrap();
+    assert_eq!(invites.len(), 1);
+    assert_eq!(invites[0]["name"], "Alice");
+    assert_eq!(invites[0]["server"], "mc.twogg.de");
+    assert_eq!(invites[0]["pack"], "pinecone://twogg/avalon");
+    let (status, _) = t
+        .json(
+            "POST",
+            &format!("/api/v1/invites/{id}/answer"),
+            Some(&bob),
+            Some(json!({ "accept": false })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, v) = t.json("GET", "/api/v1/friends", Some(&alice), None).await;
+    assert_eq!(v["sentInvites"][0]["status"], "declined");
+    let (_, v) = t.json("GET", "/api/v1/friends", Some(&bob), None).await;
+    assert!(v["invites"].as_array().unwrap().is_empty());
+    // Nochmal antworten geht nicht; fremde Packs (kein pinecone://) werden verworfen.
+    let (status, _) = t
+        .json(
+            "POST",
+            &format!("/api/v1/invites/{id}/answer"),
+            Some(&bob),
+            Some(json!({ "accept": true })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, v) = t
+        .json("POST", "/api/v1/invites", Some(&alice),
+            Some(json!({ "to": "22222222222222222222222222222222", "server": "mc.twogg.de", "pack": "https://evil.example" })))
+        .await;
+    assert!(v["id"].is_string());
+    let (_, v) = t.json("GET", "/api/v1/friends", Some(&bob), None).await;
+    assert_eq!(v["invites"][0]["pack"], Value::Null);
+    // Ratenbegrenzung: höchstens 10 je Minute.
+    let mut last = StatusCode::CREATED;
+    for _ in 0..10 {
+        (last, _) = t
+            .json(
+                "POST",
+                "/api/v1/invites",
+                Some(&alice),
+                Some(invite.clone()),
+            )
+            .await;
+    }
+    assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
+
+    // Sync-Pack teilen: nur angemeldet abrufbar.
+    let pack =
+        json!({ "name": "Event-Tasten", "options": { "key_key.jump": "key.keyboard.space" } });
+    let (status, v) = t
+        .json(
+            "POST",
+            "/api/v1/sync-shares",
+            Some(&alice),
+            Some(json!({ "data": pack })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    let share = v["code"].as_str().unwrap().to_string();
+    let (status, _) = t
+        .json("GET", &format!("/api/v1/sync-shares/{share}"), None, None)
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, v) = t
+        .json(
+            "GET",
+            &format!("/api/v1/sync-shares/{share}"),
+            Some(&bob),
+            None,
+        )
+        .await;
+    assert_eq!(v["owner"], "Alice");
+    assert_eq!(v["data"]["name"], "Event-Tasten");
+    let (status, _) = t
+        .json(
+            "POST",
+            "/api/v1/sync-shares",
+            Some(&alice),
+            Some(json!({ "data": "x".repeat(70_000) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // „Meine Freunde-Daten löschen“ nimmt Einladungen und Freigaben mit.
+    let (status, _) = t.json("DELETE", "/api/v1/me", Some(&alice), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = t
+        .json(
+            "GET",
+            &format!("/api/v1/sync-shares/{share}"),
+            Some(&bob),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, v) = t.json("GET", "/api/v1/friends", Some(&bob), None).await;
+    assert!(v["invites"].as_array().unwrap().is_empty());
+}
