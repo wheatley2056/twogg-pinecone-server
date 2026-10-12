@@ -1205,3 +1205,178 @@ async fn friend_codes_invites_and_sync_shares() {
     let (_, v) = t.json("GET", "/api/v1/friends", Some(&bob), None).await;
     assert!(v["invites"].as_array().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn admin_accounts_roles_and_audit() {
+    let t = setup().await;
+    let admin = login(&t).await;
+    let (_, me) = t.json("GET", "/api/admin/me", Some(&admin), None).await;
+    assert_eq!(me["role"], "admin");
+
+    // Konto aus der Konfiguration ist übernommen und geschützt (AK-63.1).
+    let (_, list) = t
+        .json("GET", "/api/admin/accounts", Some(&admin), None)
+        .await;
+    assert_eq!(list[0]["id"], "admin");
+    assert_eq!(list[0]["protected"], true);
+    let (status, _) = t
+        .json("DELETE", "/api/admin/accounts/admin", Some(&admin), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = t
+        .json(
+            "PUT",
+            "/api/admin/accounts/admin",
+            Some(&admin),
+            Some(json!({ "role": "editor" })),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "letzter Admin bleibt Admin (AK-63.3)"
+    );
+
+    // Redakteurin anlegen.
+    let (status, v) = t
+        .json(
+            "POST",
+            "/api/admin/accounts",
+            Some(&admin),
+            Some(json!({ "id": "lena", "role": "editor", "password": "redaktion-2026" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    assert_eq!(v["id"], "lena");
+    let (status, _) = t
+        .json(
+            "POST",
+            "/api/admin/accounts",
+            Some(&admin),
+            Some(json!({ "id": "kurz", "role": "editor", "password": "kurz" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "Passwort zu kurz");
+    let (_, v) = t
+        .json(
+            "POST",
+            "/api/admin/login",
+            None,
+            Some(json!({ "username": "lena", "password": "redaktion-2026" })),
+        )
+        .await;
+    assert_eq!(v["role"], "editor");
+    let lena = v["token"].as_str().unwrap().to_string();
+
+    // Redakteurin: Neuigkeiten ja, Packs/Einstellungen/Konten/Protokoll nein.
+    let (status, _) = t
+        .json(
+            "POST",
+            "/api/admin/news",
+            Some(&lena),
+            Some(json!({ "title": "Hallo", "body": "Text" })),
+        )
+        .await;
+    assert!(status.is_success(), "{status}");
+    let (status, _) = t.json("GET", "/api/admin/packs", Some(&lena), None).await;
+    assert_eq!(status, StatusCode::OK, "lesen darf sie");
+    let (status, _) = t
+        .json(
+            "POST",
+            "/api/admin/packs",
+            Some(&lena),
+            Some(json!({ "id": "x", "title": "X" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = t
+        .json(
+            "PUT",
+            "/api/admin/settings/main",
+            Some(&lena),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = t
+        .json("GET", "/api/admin/accounts", Some(&lena), None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = t.json("GET", "/api/admin/audit", Some(&lena), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Zum Admin befördern: alte Sitzung endet, neue Rolle gilt nach neuer Anmeldung.
+    let (status, _) = t
+        .json(
+            "PUT",
+            "/api/admin/accounts/lena",
+            Some(&admin),
+            Some(json!({ "role": "admin" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = t.json("GET", "/api/admin/packs", Some(&lena), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // Jetzt gibt es zwei Admins: lena darf herabgestuft und gelöscht werden.
+    let (status, _) = t
+        .json("DELETE", "/api/admin/accounts/lena", Some(&admin), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Protokoll: Anmeldung, Neuanlage mit ID aus der Antwort, Änderungen, Löschung – keine Lesezugriffe.
+    let (status, log) = t
+        .json(
+            "GET",
+            "/api/admin/audit?sort=%5B%22at%22%2C%22ASC%22%5D",
+            Some(&admin),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let entries: Vec<(String, String, String, String)> = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["username"].as_str().unwrap().into(),
+                e["action"].as_str().unwrap().into(),
+                e["objectType"].as_str().unwrap().into(),
+                e["objectId"].as_str().unwrap_or("").into(),
+            )
+        })
+        .collect();
+    let has = |u: &str, a: &str, o: &str, id: &str| {
+        entries
+            .iter()
+            .any(|e| e.0 == u && e.1 == a && e.2 == o && (id.is_empty() || e.3 == id))
+    };
+    assert!(has("admin", "login", "session", ""), "{entries:?}");
+    assert!(has("admin", "create", "accounts", "lena"), "{entries:?}");
+    assert!(has("lena", "create", "news", ""), "{entries:?}");
+    assert!(has("admin", "update", "accounts", "lena"), "{entries:?}");
+    assert!(has("admin", "delete", "accounts", "lena"), "{entries:?}");
+    assert!(
+        !entries.iter().any(|e| e.2 == "packs"),
+        "abgelehnte Änderungen stehen nicht drin"
+    );
+    // Das Protokoll lässt sich nicht ändern (AK-63.2).
+    let (status, _) = t
+        .json("DELETE", "/api/admin/audit/1", Some(&admin), None)
+        .await;
+    assert!(
+        status == StatusCode::METHOD_NOT_ALLOWED || status == StatusCode::NOT_FOUND,
+        "{status}"
+    );
+
+    // Unbekannter Benutzer und falsches Passwort.
+    let (status, _) = t
+        .json(
+            "POST",
+            "/api/admin/login",
+            None,
+            Some(json!({ "username": "lena", "password": "redaktion-2026" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

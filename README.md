@@ -31,7 +31,7 @@ Prüfen: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `carg
 | `PINECONE_ADDR` | Lauschadresse (Standard `0.0.0.0:8080`) |
 | `PINECONE_DATA_DIR` | Daten: `pinecone.db`, `packs/`, `media/`, `secret.key` |
 | `PINECONE_PUBLIC_URL` | Öffentliche Adresse (für Links in Antworten) |
-| `PINECONE_ADMIN_USER` | Admin-Benutzername (Standard `admin`) |
+| `PINECONE_ADMIN_USER` | Benutzername des Haupt-Admins (Standard `admin`); weitere Konten im Admin |
 | `PINECONE_ADMIN_PASSWORD` / `_HASH` | Passwort im Klartext oder als Argon2-Hash (`pinecone-server hash-password '…'`) |
 | `PINECONE_ADMIN_DIR` | Gebaute Admin-Oberfläche (`admin/dist`) |
 | `PINECONE_DOWNLOAD_TTL` | Gültigkeit der Download-Links in Sekunden (Standard 600) |
@@ -94,6 +94,16 @@ keine Skripte und nur eigene Schriften (`assets/fonts`, OFL), Vorschau-Tags für
 
 `GET /dl/{token}` liefert die `.mrpack`-Datei. Die Admin-API liegt unter `/api/admin` (Sitzung per
 Bearer-Token, 12 Stunden gültig, Sperre nach Fehlversuchen).
+
+**Admin-Konten:** Das Konto aus `PINECONE_ADMIN_USER`/`PINECONE_ADMIN_PASSWORD(_HASH)` wird bei
+jedem Start als Admin übernommen und bleibt der Notzugang (nicht löschbar, Passwort nur über die
+Konfiguration). Weitere Konten legt man im Admin unter „Konten“ an:
+
+- Rolle **Admin**: darf alles.
+- Rolle **Redaktion**: darf Neuigkeiten, die TwoGG-Auswahl und Bilder ändern und alles andere nur lesen.
+
+Jede erfolgreiche Änderung steht unter „Protokoll“. Das Protokoll lässt sich nicht bearbeiten,
+Einträge werden nach einem Jahr gelöscht.
 
 Die Verträge sind mit dem Launcher abgestimmt (`crates/core/src/twogg.rs` dort). Änderungen an der
 API bitte rückwärtskompatibel halten, da ältere Launcher-Versionen im Umlauf sind.

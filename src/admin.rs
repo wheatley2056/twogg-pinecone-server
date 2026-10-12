@@ -9,14 +9,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{QueryBuilder, Sqlite};
 
-use crate::auth::{Admin, verify_password};
+use crate::auth::Admin;
 use crate::db::{self, News, Pack, Version, Visibility};
 use crate::error::null_default;
 use crate::files::{self, media_url};
 use crate::{ApiError, ApiResult, JsonBody, MAX_UPLOAD, State};
 
-pub fn routes(_state: State) -> Router<State> {
+pub fn routes(state: State) -> Router<State> {
     Router::new()
+        .merge(crate::accounts::routes())
         .route("/login", post(login))
         .route("/logout", post(logout))
         .route("/me", get(me))
@@ -51,6 +52,10 @@ pub fn routes(_state: State) -> Router<State> {
             "/news/{id}",
             get(get_news).put(update_news).delete(delete_news),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            crate::accounts::guard,
+        ))
 }
 
 // ---------- Anmeldung ----------
@@ -71,26 +76,22 @@ async fn login(
             format!("Zu viele Fehlversuche, bitte {secs} s warten"),
         ));
     }
-    let hash = state.config.admin_password_hash.clone();
-    let password = req.password.clone();
-    // Argon2 ist absichtlich langsam: nicht im Async-Thread rechnen.
-    let ok = tokio::task::spawn_blocking(move || verify_password(&hash, &password))
-        .await
-        .unwrap_or(false)
-        && req.username == state.config.admin_user;
-    if !ok {
+    let role = crate::accounts::verify(&state, req.username.trim(), &req.password).await?;
+    let Some(role) = role else {
         state.sessions.record_failure();
         tracing::warn!("Fehlgeschlagene Admin-Anmeldung für {:?}", req.username);
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "Benutzername oder Passwort falsch",
         ));
-    }
+    };
     state.sessions.record_success();
-    let token = state.sessions.create(&req.username);
-    tracing::info!("Admin {} angemeldet", req.username);
+    let user = req.username.trim();
+    let token = state.sessions.create(user, role);
+    tracing::info!("Admin {user} angemeldet ({})", role.as_str());
+    crate::accounts::record(&state, user, "login", "session", None).await;
     Ok(Json(
-        serde_json::json!({ "token": token, "user": req.username }),
+        serde_json::json!({ "token": token, "user": user, "role": role.as_str() }),
     ))
 }
 
@@ -100,7 +101,9 @@ async fn logout(AxumState(state): AxumState<State>, admin: Admin) -> StatusCode 
 }
 
 async fn me(admin: Admin) -> Json<Value> {
-    Json(serde_json::json!({ "id": admin.user, "fullName": admin.user }))
+    Json(
+        serde_json::json!({ "id": admin.user, "fullName": admin.user, "role": admin.role.as_str() }),
+    )
 }
 
 async fn stats(AxumState(state): AxumState<State>, _: Admin) -> ApiResult<Json<Value>> {
@@ -203,6 +206,28 @@ impl ListQuery {
             limit: (end - start + 1).min(500),
             filter,
         })
+    }
+}
+
+impl ListParams {
+    pub(crate) fn sort_column(&self) -> &str {
+        &self.sort
+    }
+
+    pub(crate) fn desc(&self) -> bool {
+        self.desc
+    }
+
+    pub(crate) fn limit(&self) -> i64 {
+        self.limit
+    }
+
+    /// Einfacher Textfilter (`{"feld":"wert"}`), sonst `None`.
+    pub(crate) fn filter_str(&self, key: &str) -> Option<String> {
+        self.filter
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
     }
 }
 
