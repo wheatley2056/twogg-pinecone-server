@@ -37,6 +37,9 @@ Prüfen: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `carg
 | `PINECONE_DOWNLOAD_TTL` | Gültigkeit der Download-Links in Sekunden (Standard 600) |
 | `PINECONE_SESSION_SERVER` | Mojang-Session-Server für die Freunde-Anmeldung (Standard `https://sessionserver.mojang.com`) |
 | `PINECONE_LAUNCHER_URL` | Download-Seite des Launchers, verlinkt auf den Modpack-Seiten (Standard: Landing Page auf GitHub Pages) |
+| `PINECONE_CURSEFORGE_API_KEY` | CurseForge-API-Schlüssel für den Proxy (siehe unten). Ohne ihn ist CurseForge im Launcher ausgeblendet |
+| `PINECONE_CURSEFORGE_API` | CurseForge-API-Adresse (Standard `https://api.curseforge.com`, für Tests) |
+| `PINECONE_PLAYER_RETENTION_DAYS` | Spielerprofile der Freundesliste, die so viele Tage nicht gesehen wurden, werden gelöscht (Standard 365, `0` = nie) |
 
 Datenbank-Migrationen laufen beim Start automatisch.
 
@@ -44,16 +47,38 @@ Datenbank-Migrationen laufen beim Start automatisch.
 
 | Endpunkt | |
 |---|---|
-| `GET /info` | Server-Infos, Community-Server (Name, Adresse) |
+| `GET /info` | Server-Infos, Community-Server (Name, Adresse), `curseforge` (Proxy verfügbar), `legal` (Impressum, Datenschutz, Kontakt) |
 | `GET /news?limit=10` | sichtbare Neuigkeiten (Markdown als HTML) |
 | `GET /packs`, `GET /packs/{id}` | öffentliche Modpacks mit Versionen, optional `eventId` (twogg.app-Event) |
 | `POST /packs/{id}/versions/{version}/download` | signierter Download-Link (Header `X-Pinecone-Client: pinecone/<version>`) |
 | `GET /recommendations?type=modpack\|mod\|resourcepack\|shader\|datapack` | TwoGG-Auswahl |
 | `POST /auth/challenge`, `POST /auth/verify` | Freunde-Anmeldung mit dem Minecraft-Konto (Mojang `join` / `hasJoined`), Sitzung 30 Tage |
 | `GET /me`, `POST /presence` | eigenes Profil, Präsenz mit Aktivität (online = letzte 90 s) |
+| `DELETE /me` | eigenes Spielerprofil mit Sitzungen, Anfragen und Freundschaften löschen |
+| `GET /curseforge/v1/mods/search`, `GET /curseforge/v1/mods/{id}/files`, `POST /curseforge/v1/mods/files`, `POST /curseforge/v1/mods` | CurseForge-Proxy (Header `X-Pinecone-Client`, 240 Anfragen/min je IP) |
 | `GET /friends`, `POST /friends/requests`, `POST /friends/requests/{uuid}/accept`, `DELETE /friends/requests/{uuid}`, `DELETE /friends/{uuid}` | Freunde und Anfragen (per Spielername) |
 
 `GET /packs/{id}` in der API enthält `pageUrl`, die öffentliche Seite des Packs.
+
+## CurseForge
+
+Die [CurseForge-API-Bedingungen](https://support.curseforge.com/en/support/solutions/articles/9000207405)
+erlauben nicht, den API-Schlüssel weiterzugeben, und nicht, API-Daten zu speichern oder zu cachen.
+Darum liegt der Schlüssel nur auf diesem Server (`PINECONE_CURSEFORGE_API_KEY`), und der Launcher
+fragt über `/api/v1/curseforge/...`. Der Proxy reicht nur die vier Abfragen weiter, die der Launcher
+braucht, setzt die Spiel-ID fest auf Minecraft (432), verwirft andere Parameter und speichert
+nichts (`Cache-Control: no-store`). Den Schlüssel beantragt man über das Formular auf
+[docs.curseforge.com](https://docs.curseforge.com/rest-api/) für „TwoGG Pinecone“.
+
+## Datenschutz
+
+- Spielerprofile der Freundesliste (UUID, Name, letzte Aktivität) löscht der Spieler selbst über
+  `DELETE /api/v1/me` (Launcher: Einstellungen › Konten). Profile ohne Aktivität seit
+  `PINECONE_PLAYER_RETENTION_DAYS` Tagen und abgelaufene Sitzungen löscht der Server täglich.
+- IP-Adressen hält der Server nur im Speicher für die Ratenbegrenzung, nicht in der Datenbank.
+- Impressum, Datenschutzerklärung und Kontakt-E-Mail pflegt man unter Einstellungen in `/admin`.
+  Die Modpack-Seiten zeigen sie zusammen mit dem Hinweis „Kein offizielles Minecraft-Produkt“
+  (verlangt von den [Minecraft-Nutzungsrichtlinien](https://www.minecraft.net/en-us/usage-guidelines)).
 
 ## Modpack-Seiten
 
@@ -65,7 +90,7 @@ und Kennzahlen, Tabs „Beschreibung“ und „Versionen“, Seitenleiste mit De
 keine Skripte und nur eigene Schriften (`assets/fonts`, OFL), Vorschau-Tags für Discord sind gesetzt.
 
 `GET /dl/{token}` liefert die `.mrpack`-Datei. Die Admin-API liegt unter `/api/admin` (Sitzung per
-Cookie, Sperre nach Fehlversuchen).
+Bearer-Token, 12 Stunden gültig, Sperre nach Fehlversuchen).
 
 Die Verträge sind mit dem Launcher abgestimmt (`crates/core/src/twogg.rs` dort). Änderungen an der
 API bitte rückwärtskompatibel halten, da ältere Launcher-Versionen im Umlauf sind.

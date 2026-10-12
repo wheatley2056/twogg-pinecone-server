@@ -36,7 +36,7 @@ pub fn routes() -> Router<State> {
     Router::new()
         .route("/auth/challenge", post(challenge))
         .route("/auth/verify", post(verify))
-        .route("/me", get(me))
+        .route("/me", get(me).delete(delete_me))
         .route("/presence", post(presence))
         .route("/friends", get(friends))
         .route("/friends/requests", post(request))
@@ -529,6 +529,54 @@ async fn remove(
         .execute(&state.db)
         .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Eigenes Spielerprofil mit Sitzungen, Anfragen und Freundschaften löschen (Recht auf Löschung).
+/// Die Fremdschlüssel löschen abhängige Zeilen mit (`ON DELETE CASCADE`).
+async fn delete_me(
+    AxumState(state): AxumState<State>,
+    player: Player,
+) -> ApiResult<axum::http::StatusCode> {
+    sqlx::query("DELETE FROM players WHERE uuid = ?")
+        .bind(&player.uuid)
+        .execute(&state.db)
+        .await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// Standard-Aufbewahrung für inaktive Spielerprofile.
+pub const DEFAULT_RETENTION_DAYS: u64 = 365;
+
+/// Abgelaufene Sitzungen und lange inaktive Spielerprofile entfernen.
+pub async fn cleanup(state: &State) -> sqlx::Result<u64> {
+    let now = now();
+    sqlx::query("DELETE FROM player_sessions WHERE expires_at <= ?")
+        .bind(now)
+        .execute(&state.db)
+        .await?;
+    let days = state.config.player_retention_days;
+    if days == 0 {
+        return Ok(0);
+    }
+    let cutoff = now - (days as i64) * 86_400;
+    let r = sqlx::query("DELETE FROM players WHERE last_seen < ?")
+        .bind(cutoff)
+        .execute(&state.db)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// Läuft im Hintergrund: beim Start und dann täglich.
+pub async fn cleanup_loop(state: State) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(86_400));
+    loop {
+        tick.tick().await;
+        match cleanup(&state).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("{n} inaktive Spielerprofile gelöscht"),
+            Err(e) => tracing::warn!("Aufräumen der Spielerprofile: {e}"),
+        }
+    }
 }
 
 #[cfg(test)]
