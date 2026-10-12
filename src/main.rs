@@ -18,6 +18,7 @@ mod pages;
 mod recommendations;
 mod settings;
 mod social;
+mod stats;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -121,6 +122,8 @@ pub struct AppState {
     pub cf_limiter: api::RateLimiter,
     pub challenges: friends::Challenges,
     pub code_failures: social::CodeFailures,
+    /// Heute schon gezählte Launcher (nur im Speicher).
+    pub seen_today: stats::SeenToday,
     pub http: reqwest::Client,
 }
 
@@ -141,6 +144,7 @@ pub async fn build_state(config: Config) -> anyhow::Result<State> {
         cf_limiter: api::RateLimiter::new(curseforge::REQUESTS_PER_MINUTE, curseforge::WINDOW),
         challenges: friends::Challenges::default(),
         code_failures: social::CodeFailures::default(),
+        seen_today: stats::SeenToday::default(),
         http: reqwest::Client::builder()
             .user_agent(concat!("pinecone-server/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(10))

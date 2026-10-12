@@ -79,6 +79,9 @@ nichts (`Cache-Control: no-store`). Den Schlüssel beantragt man über das Formu
   `DELETE /api/v1/me` (Launcher: Einstellungen › Konten). Profile ohne Aktivität seit
   `PINECONE_PLAYER_RETENTION_DAYS` Tagen und abgelaufene Sitzungen löscht der Server täglich.
 - IP-Adressen hält der Server nur im Speicher für die Ratenbegrenzung, nicht in der Datenbank.
+- Nutzungsstatistik (Dashboard im Admin): nur Tageszähler für aktive Freunde-Profile, Launcher je
+  Version (aus `User-Agent`/`X-Pinecone-Client`, je IP und Tag einmal über gesalzene Hashes im
+  Speicher) und Downloads je Pack-Version. Zähler älter als 400 Tage löscht der Server täglich.
 - Impressum, Datenschutzerklärung und Kontakt-E-Mail pflegt man unter Einstellungen in `/admin`.
   Die Modpack-Seiten zeigen sie zusammen mit dem Hinweis „Kein offizielles Minecraft-Produkt“
   (verlangt von den [Minecraft-Nutzungsrichtlinien](https://www.minecraft.net/en-us/usage-guidelines)).

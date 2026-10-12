@@ -22,6 +22,7 @@ pub fn routes(state: State) -> Router<State> {
         .route("/logout", post(logout))
         .route("/me", get(me))
         .route("/stats", get(stats))
+        .route("/stats/daily", get(crate::stats::daily))
         .route("/media", post(upload_media))
         .route("/packs", get(list_packs).post(create_pack))
         .route(

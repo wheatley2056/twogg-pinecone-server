@@ -162,6 +162,16 @@ CREATE INDEX audit_at ON audit_log(at DESC);
 ALTER TABLE versions ADD COLUMN withdrawn_reason TEXT;
 ALTER TABLE versions ADD COLUMN withdrawn_at INTEGER;
 "#,
+    r#"
+-- Nutzungsstatistik ohne Personenbezug (F-59): nur Tageszähler
+CREATE TABLE daily_stats (
+    day     INTEGER NOT NULL,
+    metric  TEXT NOT NULL,
+    key     TEXT NOT NULL DEFAULT '',
+    count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, metric, key)
+) WITHOUT ROWID;
+"#,
 ];
 
 pub async fn connect(path: &Path) -> anyhow::Result<SqlitePool> {

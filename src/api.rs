@@ -73,7 +73,12 @@ struct GameServer {
     address: String,
 }
 
-async fn info(AxumState(state): AxumState<State>) -> ApiResult<Json<Info>> {
+async fn info(
+    AxumState(state): AxumState<State>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Info>> {
+    crate::stats::count_launcher(&state, client_ip(&headers, peer), &headers).await;
     let (packs,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM packs WHERE visibility = 'public'")
         .fetch_one(&state.db)
         .await?;
@@ -382,6 +387,8 @@ pub async fn download(
         .bind(&v.id)
         .execute(&state.db)
         .await?;
+    let key = format!("{}/{}", v.pack_id, v.version);
+    crate::stats::bump(&state, crate::stats::DOWNLOAD, &key).await;
     let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
     Ok((
         [

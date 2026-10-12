@@ -179,9 +179,15 @@ async fn verify(
     let uuid =
         normalize_uuid(&profile.id).ok_or_else(|| ApiError::bad_request("Ungültige UUID"))?;
     let t = now();
+    let prev: Option<(i64,)> = sqlx::query_as("SELECT last_seen FROM players WHERE uuid = ?")
+        .bind(&uuid)
+        .fetch_optional(&state.db)
+        .await?;
+    crate::stats::mark_active(&state, prev.map(|p| p.0)).await;
     sqlx::query(
         "INSERT INTO players (uuid, name, name_lower, created_at, last_seen) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(uuid) DO UPDATE SET name = excluded.name, name_lower = excluded.name_lower",
+         ON CONFLICT(uuid) DO UPDATE SET name = excluded.name, name_lower = excluded.name_lower,
+         last_seen = excluded.last_seen",
     )
     .bind(&uuid)
     .bind(&profile.name)
@@ -264,6 +270,11 @@ async fn presence(
     JsonBody(req): JsonBody<PresenceRequest>,
 ) -> ApiResult<Json<Value>> {
     let activity = serde_json::to_string(&req.activity.cleaned()).unwrap_or_default();
+    let (last_seen,): (i64,) = sqlx::query_as("SELECT last_seen FROM players WHERE uuid = ?")
+        .bind(&player.uuid)
+        .fetch_one(&state.db)
+        .await?;
+    crate::stats::mark_active(&state, Some(last_seen)).await;
     sqlx::query("UPDATE players SET last_seen = ?, activity = ? WHERE uuid = ?")
         .bind(now())
         .bind(activity)
@@ -590,6 +601,9 @@ pub async fn cleanup_loop(state: State) {
         tick.tick().await;
         if let Err(e) = crate::accounts::cleanup(&state).await {
             tracing::warn!("Aufräumen des Protokolls: {e}");
+        }
+        if let Err(e) = crate::stats::cleanup(&state).await {
+            tracing::warn!("Aufräumen der Statistik: {e}");
         }
         if let Err(e) = crate::social::cleanup(&state).await {
             tracing::warn!("Aufräumen von Einladungen und Freigaben: {e}");

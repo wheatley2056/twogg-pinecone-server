@@ -1543,3 +1543,110 @@ async fn banner_and_min_launcher_version_in_info() {
     let (_, info) = app.json("GET", "/api/v1/info", None, None).await;
     assert!(info.get("banner").is_none(), "{info}");
 }
+
+#[tokio::test]
+async fn daily_usage_stats_without_personal_data() {
+    let t = setup_with_session(mock_mojang().await).await;
+    let token = login(&t).await;
+    let admin = Some(token.as_str());
+
+    // Launcher zählen einmal je IP, Version und Tag; fremde Clients gar nicht.
+    let info = |ip: &'static str, header: (&'static str, &'static str)| {
+        let t = &t;
+        async move {
+            let req = Request::get("/api/v1/info")
+                .header("x-real-ip", ip)
+                .header(header.0, header.1)
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(t.send(req).await.0, StatusCode::OK);
+        }
+    };
+    info("203.0.113.1", ("user-agent", "pinecone/0.9.8")).await;
+    info("203.0.113.1", ("user-agent", "pinecone/0.9.8")).await;
+    info("203.0.113.2", ("user-agent", "pinecone/0.9.8")).await;
+    info("203.0.113.1", ("x-pinecone-client", "pinecone/0.9.7")).await;
+    info("203.0.113.3", ("user-agent", "Mozilla/5.0")).await;
+    info("203.0.113.3", ("user-agent", "pinecone/kaputt")).await;
+
+    // Aktive Profile: Anmeldung und Präsenz am selben Tag zählen einmal.
+    let alice = player_login(&t, "Alice").await;
+    t.json(
+        "POST",
+        "/api/v1/presence",
+        Some(&alice),
+        Some(json!({ "activity": {} })),
+    )
+    .await;
+    player_login(&t, "Alice").await;
+    player_login(&t, "Bob").await;
+
+    // Downloads je Pack-Version.
+    t.json(
+        "POST",
+        "/api/admin/packs",
+        admin,
+        Some(json!({ "id": "avalon", "title": "Avalon", "visibility": "public" })),
+    )
+    .await;
+    let (ct, body) = multipart(&[("packId", "avalon")], Some(("a.mrpack", &mrpack())));
+    let (_, _, bytes) = t
+        .send(
+            Request::post("/api/admin/versions")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, ct)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+    let vid = serde_json::from_slice::<Value>(&bytes).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for _ in 0..2 {
+        let (_, _, link) =
+            launcher_post(&t, &format!("/api/v1/packs/avalon/versions/{vid}/download")).await;
+        let path = link["url"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("https://pinecone.test")
+            .to_string();
+        let (status, _, _) = t
+            .send(Request::get(path).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let (status, _) = t.json("GET", "/api/admin/stats/daily", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, s) = t
+        .json("GET", "/api/admin/stats/daily?days=7", admin, None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{s}");
+    assert_eq!(s["days"], 7);
+    assert_eq!(s["active"].as_array().unwrap().len(), 7);
+    assert_eq!(s["active"][6], 2, "{s}");
+    assert_eq!(s["launchers"][0]["key"], "0.9.8");
+    assert_eq!(s["launchers"][0]["total"], 2);
+    assert_eq!(s["launchers"][1]["key"], "0.9.7");
+    assert_eq!(s["launchers"].as_array().unwrap().len(), 2, "{s}");
+    assert_eq!(s["downloads"][0]["key"], "avalon/1.2.0");
+    assert_eq!(s["downloads"][0]["counts"][6], 2);
+    let (_, s) = t
+        .json("GET", "/api/admin/stats/daily?days=99999", admin, None)
+        .await;
+    assert_eq!(s["days"], 365);
+}
+
+async fn launcher_post(t: &TestApp, uri: &str) -> (StatusCode, axum::http::HeaderMap, Value) {
+    let req = Request::post(uri)
+        .header("x-pinecone-client", "pinecone/0.9.8")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = t.send(req).await;
+    (
+        status,
+        headers,
+        serde_json::from_slice(&body).unwrap_or(Value::Null),
+    )
+}
