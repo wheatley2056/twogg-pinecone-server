@@ -6,6 +6,7 @@
 pub(crate) mod admin;
 mod api;
 mod auth;
+mod curseforge;
 mod db;
 mod error;
 mod files;
@@ -50,6 +51,13 @@ pub struct Config {
     pub session_server: String,
     /// Download-Seite des Launchers (verlinkt auf den Modpack-Seiten).
     pub launcher_url: String,
+    /// CurseForge-API-Schlüssel; nur hier, nie im Launcher (siehe `curseforge.rs`).
+    pub curseforge_key: Option<String>,
+    /// CurseForge-API (in Tests ein Mock).
+    pub curseforge_api: String,
+    /// Spielerprofile der Freundesliste, die so viele Tage nicht mehr gesehen wurden, werden
+    /// samt Freundschaften gelöscht (0 = nie).
+    pub player_retention_days: u64,
 }
 
 impl Config {
@@ -88,6 +96,14 @@ impl Config {
                 .unwrap_or_else(|| friends::DEFAULT_SESSION_SERVER.into()),
             launcher_url: var("PINECONE_LAUNCHER_URL")
                 .unwrap_or_else(|| pages::DEFAULT_LAUNCHER_URL.into()),
+            curseforge_key: var("PINECONE_CURSEFORGE_API_KEY"),
+            curseforge_api: var("PINECONE_CURSEFORGE_API")
+                .unwrap_or_else(|| curseforge::DEFAULT_API.into())
+                .trim_end_matches('/')
+                .to_string(),
+            player_retention_days: var("PINECONE_PLAYER_RETENTION_DAYS")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(friends::DEFAULT_RETENTION_DAYS),
         })
     }
 }
@@ -99,6 +115,8 @@ pub struct AppState {
     pub secret: Vec<u8>,
     pub sessions: auth::Sessions,
     pub limiter: api::RateLimiter,
+    /// Ratenbegrenzung für den CurseForge-Proxy.
+    pub cf_limiter: api::RateLimiter,
     pub challenges: friends::Challenges,
     pub http: reqwest::Client,
 }
@@ -116,6 +134,7 @@ pub async fn build_state(config: Config) -> anyhow::Result<State> {
         secret,
         sessions: auth::Sessions::default(),
         limiter: api::RateLimiter::default(),
+        cf_limiter: api::RateLimiter::new(curseforge::REQUESTS_PER_MINUTE, curseforge::WINDOW),
         challenges: friends::Challenges::default(),
         http: reqwest::Client::builder()
             .user_agent(concat!("pinecone-server/", env!("CARGO_PKG_VERSION")))
@@ -137,7 +156,12 @@ pub fn router(state: State) -> Router {
         )
         .merge(pages::routes())
         .route("/health", get(|| async { "ok" }))
-        .nest("/api/v1", api::routes().merge(friends::routes()))
+        .nest(
+            "/api/v1",
+            api::routes()
+                .merge(friends::routes())
+                .merge(curseforge::routes()),
+        )
         .nest(
             "/api/admin",
             admin::routes(state.clone()).layer(DefaultBodyLimit::max(MAX_UPLOAD)),
@@ -185,6 +209,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     let addr = config.addr;
     let state = build_state(config).await?;
+    tokio::spawn(friends::cleanup_loop(state.clone()));
     tracing::info!("Pinecone-Server lauscht auf {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(

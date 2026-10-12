@@ -14,6 +14,7 @@ use crate::State;
 use crate::db::{self, Pack, Version};
 use crate::files::media_url;
 use crate::markdown;
+use crate::settings::Settings;
 
 /// Landing Page mit den Downloads des Launchers.
 pub const DEFAULT_LAUNCHER_URL: &str = "https://wheatley2056.github.io/twogg-pinecone/";
@@ -89,12 +90,14 @@ async fn index(AxumState(state): AxumState<State>) -> Response {
 <main class="wrap list">{cards}</main>"#
     );
     let launcher = state.config.launcher_url.clone();
+    let legal = legal(&state).await;
     html_page(
         "TwoGG-Modpacks",
         "Modpacks der TwoGG-Community, installierbar mit dem Pinecone-Launcher.",
         None,
         &format!("{}/packs", state.config.public_url),
         &launcher,
+        &legal,
         &body,
     )
 }
@@ -110,7 +113,7 @@ async fn page(AxumState(state): AxumState<State>, Path(id): Path<String>) -> Res
             Err(e) => return failure(e),
         };
     let Some(p) = pack else {
-        return not_found(&state.config.launcher_url);
+        return not_found(&state.config.launcher_url, &legal(&state).await);
     };
     let versions = match db::versions_of(&state.db, &p.id).await {
         Ok(v) => v,
@@ -118,6 +121,7 @@ async fn page(AxumState(state): AxumState<State>, Path(id): Path<String>) -> Res
     };
     let base = &state.config.public_url;
     let launcher = &state.config.launcher_url;
+    let legal = legal(&state).await;
     let downloads: i64 = versions.iter().map(|v| v.downloads).sum();
     let newest = latest(&versions);
     let link = format!("pinecone://twogg/{}", p.id);
@@ -282,16 +286,53 @@ async fn page(AxumState(state): AxumState<State>, Path(id): Path<String>) -> Res
         image.as_deref(),
         &page_url(base, &p.id),
         launcher,
+        &legal,
         &body,
     )
 }
 
-fn not_found(launcher: &str) -> Response {
+/// Rechtliche Angaben aus der Admin-Seite; bei Datenbankfehlern leer (der Pflichthinweis zu
+/// Minecraft steht trotzdem im Fuß).
+async fn legal(state: &State) -> Settings {
+    crate::settings::load(state).await.unwrap_or_default()
+}
+
+/// Pflichthinweis nach den Minecraft-Nutzungsrichtlinien (minecraft.net/usage-guidelines).
+pub const DISCLAIMER: &str = "Kein offizielles Minecraft-Produkt. Nicht von Mojang oder Microsoft genehmigt oder mit ihnen verbunden. NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.";
+
+/// Impressum, Datenschutz und Kontakt, soweit in der Admin-Seite gepflegt.
+fn legal_links(legal: &Settings) -> String {
+    let mut out = String::new();
+    if !legal.imprint_url.is_empty() {
+        let _ = write!(
+            out,
+            r#" · <a href="{}">Impressum</a>"#,
+            esc(&legal.imprint_url)
+        );
+    }
+    if !legal.privacy_url.is_empty() {
+        let _ = write!(
+            out,
+            r#" · <a href="{}">Datenschutz</a>"#,
+            esc(&legal.privacy_url)
+        );
+    }
+    if !legal.contact_email.is_empty() {
+        let _ = write!(
+            out,
+            r#" · <a href="mailto:{e}">{e}</a>"#,
+            e = esc(&legal.contact_email)
+        );
+    }
+    out
+}
+
+fn not_found(launcher: &str, legal: &Settings) -> Response {
     let body = r#"<section class="hero"><div class="wrap hero-inner"><div class="hero-text">
   <span class="label">404</span><h1>Pack nicht gefunden</h1>
   <p class="summary">Dieses Modpack gibt es nicht (mehr). <a href="/packs">Alle TwoGG-Modpacks</a></p>
 </div></div></section>"#;
-    let mut res = html_page("Nicht gefunden", "", None, "", launcher, body);
+    let mut res = html_page("Nicht gefunden", "", None, "", launcher, legal, body);
     *res.status_mut() = StatusCode::NOT_FOUND;
     res
 }
@@ -307,6 +348,7 @@ fn html_page(
     image: Option<&str>,
     url: &str,
     launcher: &str,
+    legal: &Settings,
     body: &str,
 ) -> Response {
     let mut meta = format!(
@@ -345,12 +387,16 @@ fn html_page(
   <a class="btn small" href="{launcher}">{ICON_DOWNLOAD}Pinecone herunterladen</a>
 </div></header>
 {body}
-<footer class="foot"><div class="wrap">TwoGG Pinecone · <a href="{launcher}">Launcher</a> · <a href="https://twogg.app">twogg.app</a></div></footer>
+<footer class="foot"><div class="wrap">
+  <p>TwoGG Pinecone · <a href="{launcher}">Launcher</a> · <a href="https://twogg.app">twogg.app</a>{legal_links}</p>
+  <p class="disclaimer">{DISCLAIMER}</p>
+</div></footer>
 </body>
 </html>"##,
         title = esc(title),
         description = esc(description),
         launcher = esc(launcher),
+        legal_links = legal_links(legal),
     );
     let mut res = Html(html).into_response();
     let headers = res.headers_mut();
@@ -650,6 +696,8 @@ dd { margin: 0; color: var(--text); text-align: right; overflow-wrap: anywhere; 
 .empty { color: var(--text-muted); }
 
 .foot { border-top: 1px solid var(--line); padding: 22px 0; font-size: 13px; color: var(--text-dim); }
+.foot p { margin: 0 0 6px; }
+.foot .disclaimer { font-size: 12px; }
 
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }

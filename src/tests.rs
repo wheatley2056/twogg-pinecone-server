@@ -23,6 +23,14 @@ async fn setup() -> TestApp {
 }
 
 async fn setup_with_session(session_server: String) -> TestApp {
+    setup_with(session_server, None, "http://127.0.0.1:9".into()).await
+}
+
+async fn setup_with(
+    session_server: String,
+    curseforge_key: Option<String>,
+    curseforge_api: String,
+) -> TestApp {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {
         addr: "127.0.0.1:0".parse().unwrap(),
@@ -34,6 +42,9 @@ async fn setup_with_session(session_server: String) -> TestApp {
         download_ttl: 600,
         session_server,
         launcher_url: "https://launcher.test/".into(),
+        curseforge_key,
+        curseforge_api,
+        player_retention_days: 365,
     };
     std::fs::create_dir_all(&config.admin_dir).unwrap();
     std::fs::write(config.admin_dir.join("index.html"), "<html>admin</html>").unwrap();
@@ -779,4 +790,221 @@ async fn public_pack_pages() {
     let (status, headers, _) = page("/").await;
     assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(headers[header::LOCATION], "/packs");
+}
+
+/// Nachgebaute CurseForge-API: prüft Schlüssel und Spiel-ID und gibt die Anfrage zurück.
+async fn mock_curseforge() -> String {
+    use axum::extract::RawQuery;
+    use axum::http::HeaderMap;
+    use axum::routing::{get, post};
+    let app = axum::Router::new()
+        .route(
+            "/v1/mods/search",
+            get(|headers: HeaderMap, RawQuery(q): RawQuery| async move {
+                if headers.get("x-api-key").and_then(|v| v.to_str().ok()) != Some("cf-key") {
+                    return (StatusCode::FORBIDDEN, String::new());
+                }
+                (
+                    StatusCode::OK,
+                    json!({ "data": [], "query": q.unwrap_or_default() }).to_string(),
+                )
+            }),
+        )
+        .route(
+            "/v1/mods/{id}/files",
+            get(
+                |axum::extract::Path(id): axum::extract::Path<u64>| async move {
+                    json!({ "data": [{ "id": id * 10 }] }).to_string()
+                },
+            ),
+        )
+        .route(
+            "/v1/mods",
+            post(|axum::Json(v): axum::Json<Value>| async move {
+                json!({ "data": v["modIds"] }).to_string()
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+async fn launcher_get(t: &TestApp, uri: &str) -> (StatusCode, axum::http::HeaderMap, Value) {
+    let req = Request::builder()
+        .uri(uri)
+        .header("x-pinecone-client", "pinecone/0.9.6")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = t.send(req).await;
+    (
+        status,
+        headers,
+        serde_json::from_slice(&body).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn curseforge_proxy_keeps_key_on_server() {
+    // Ohne Schlüssel: nicht verfügbar, und /info sagt das dem Launcher.
+    let t = setup().await;
+    let (_, info) = t.json("GET", "/api/v1/info", None, None).await;
+    assert_eq!(info["curseforge"], false);
+    let (status, _, _) = launcher_get(&t, "/api/v1/curseforge/v1/mods/search?searchFilter=x").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let t = setup_with(
+        "http://127.0.0.1:9".into(),
+        Some("cf-key".into()),
+        mock_curseforge().await,
+    )
+    .await;
+    let (_, info) = t.json("GET", "/api/v1/info", None, None).await;
+    assert_eq!(info["curseforge"], true);
+
+    // Nur der Launcher darf fragen.
+    let (status, _) = t
+        .json("GET", "/api/v1/curseforge/v1/mods/search", None, None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Spiel-ID ist fest Minecraft, fremde Parameter fallen weg, nichts wird gecacht.
+    let (status, headers, v) = launcher_get(
+        &t,
+        "/api/v1/curseforge/v1/mods/search?gameId=1&searchFilter=sodium&apiKey=klau&pageSize=5",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["query"], "gameId=432&searchFilter=sodium&pageSize=5");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert!(!v.to_string().contains("cf-key"));
+
+    let (_, _, v) = launcher_get(&t, "/api/v1/curseforge/v1/mods/7/files?pageSize=50").await;
+    assert_eq!(v["data"][0]["id"], 70);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/curseforge/v1/mods")
+        .header("x-pinecone-client", "pinecone/0.9.6")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({ "modIds": [1, 2] }).to_string()))
+        .unwrap();
+    let (status, _, body) = t.send(req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["data"],
+        json!([1, 2])
+    );
+
+    // Abgelehnter Schlüssel wird zum Serverfehler, nicht zu einem 403 für den Launcher.
+    let t = setup_with(
+        "http://127.0.0.1:9".into(),
+        Some("falsch".into()),
+        mock_curseforge().await,
+    )
+    .await;
+    let (status, _, _) = launcher_get(&t, "/api/v1/curseforge/v1/mods/search").await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn players_can_delete_their_data_and_inactive_profiles_expire() {
+    let t = setup_with_session(mock_mojang().await).await;
+    let alice = player_login(&t, "Alice").await;
+    let bob = player_login(&t, "Bob").await;
+    t.json(
+        "POST",
+        "/api/v1/friends/requests",
+        Some(&alice),
+        Some(json!({ "name": "Bob" })),
+    )
+    .await;
+    let (status, _) = t.json("DELETE", "/api/v1/me", Some(&alice), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // Sitzung ist weg, Anfrage bei Bob auch.
+    let (status, _) = t.json("GET", "/api/v1/friends", Some(&alice), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, v) = t.json("GET", "/api/v1/friends", Some(&bob), None).await;
+    assert!(v["incoming"].as_array().unwrap().is_empty(), "{v}");
+}
+
+#[tokio::test]
+async fn cleanup_removes_long_inactive_players() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        addr: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.path().join("data"),
+        public_url: "https://pinecone.test".into(),
+        admin_user: "admin".into(),
+        admin_password_hash: crate::auth::hash_password("geheimes-passwort").unwrap(),
+        admin_dir: dir.path().join("admin"),
+        download_ttl: 600,
+        session_server: "http://127.0.0.1:9".into(),
+        launcher_url: "https://launcher.test/".into(),
+        curseforge_key: None,
+        curseforge_api: "http://127.0.0.1:9".into(),
+        player_retention_days: 30,
+    };
+    let state = build_state(config).await.unwrap();
+    let now = crate::db::now();
+    for (uuid, seen) in [("a", now), ("b", now - 31 * 86_400)] {
+        sqlx::query(
+            "INSERT INTO players (uuid, name, name_lower, created_at, last_seen) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(uuid)
+        .bind(uuid)
+        .bind(uuid)
+        .bind(seen)
+        .bind(seen)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    }
+    assert_eq!(crate::friends::cleanup(&state).await.unwrap(), 1);
+    let (left,): (String,) = sqlx::query_as("SELECT uuid FROM players")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(left, "a");
+}
+
+#[tokio::test]
+async fn legal_settings_and_disclaimer() {
+    let app = setup().await;
+    let t = login(&app).await;
+    let (status, _) = app
+        .json(
+            "PUT",
+            "/api/admin/settings/main",
+            Some(&t),
+            Some(json!({ "privacyUrl": "http://unsicher.de" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = app
+        .json(
+            "PUT",
+            "/api/admin/settings/main",
+            Some(&t),
+            Some(json!({
+                "imprintUrl": "https://twogg.app/impressum",
+                "privacyUrl": "https://twogg.app/datenschutz",
+                "contactEmail": "kontakt@twogg.de"
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, info) = app.json("GET", "/api/v1/info", None, None).await;
+    assert_eq!(info["legal"]["privacyUrl"], "https://twogg.app/datenschutz");
+    assert_eq!(info["legal"]["contactEmail"], "kontakt@twogg.de");
+
+    let req = Request::builder()
+        .uri("/packs")
+        .body(Body::empty())
+        .unwrap();
+    let (_, _, body) = app.send(req).await;
+    let html = String::from_utf8(body).unwrap();
+    assert!(html.contains("NOT AN OFFICIAL MINECRAFT PRODUCT"));
+    assert!(html.contains(r#"href="https://twogg.app/impressum""#));
+    assert!(html.contains("mailto:kontakt@twogg.de"));
 }

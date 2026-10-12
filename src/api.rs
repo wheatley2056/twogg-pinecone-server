@@ -46,6 +46,18 @@ struct Info {
     packs: i64,
     /// Community-Server für den Schnellbeitritt im Launcher (in der Admin-Seite gepflegt).
     game_server: Option<GameServer>,
+    /// CurseForge-Inhalte über diesen Server verfügbar (Schlüssel eingerichtet).
+    curseforge: bool,
+    /// Rechtliche Angaben aus der Admin-Seite (Impressum, Datenschutz, Kontakt).
+    legal: Legal,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Legal {
+    imprint_url: Option<String>,
+    privacy_url: Option<String>,
+    contact_email: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -68,11 +80,18 @@ async fn info(AxumState(state): AxumState<State>) -> ApiResult<Json<Info>> {
         },
         address: settings.game_server_address,
     });
+    let some = |s: String| (!s.is_empty()).then_some(s);
     Ok(Json(Info {
         name: "TwoGG Pinecone",
         version: env!("CARGO_PKG_VERSION"),
         packs,
         game_server,
+        curseforge: state.config.curseforge_key.is_some(),
+        legal: Legal {
+            imprint_url: some(settings.imprint_url),
+            privacy_url: some(settings.privacy_url),
+            contact_email: some(settings.contact_email),
+        },
     }))
 }
 
@@ -242,7 +261,7 @@ struct DownloadLink {
 }
 
 /// Echte Client-IP hinter Cloudflare/Nginx Proxy Manager.
-fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> IpAddr {
+pub(crate) fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> IpAddr {
     let header_ip = |name: &str| {
         headers
             .get(name)
@@ -256,17 +275,21 @@ fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> IpAddr {
         .unwrap_or(peer.ip())
 }
 
+/// Anfrage kommt vom Launcher (`X-Pinecone-Client: pinecone/<version>`).
+pub(crate) fn is_launcher(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-pinecone-client")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|c| c.starts_with("pinecone/"))
+}
+
 async fn download_link(
     AxumState(state): AxumState<State>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path((id, version)): Path<(String, String)>,
 ) -> ApiResult<Json<DownloadLink>> {
-    let client = headers
-        .get("x-pinecone-client")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    if !client.starts_with("pinecone/") {
+    if !is_launcher(&headers) {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
             "Dieses Modpack gibt es nur im TwoGG-Pinecone-Launcher",
@@ -353,22 +376,40 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-/// Einfache Ratenbegrenzung im Speicher: höchstens `LINKS_PER_WINDOW` Links je IP und Fenster.
-#[derive(Default)]
-pub struct RateLimiter(Mutex<HashMap<IpAddr, (u32, Instant)>>);
+/// Einfache Ratenbegrenzung im Speicher: höchstens `limit` Anfragen je IP und Zeitfenster.
+/// Standard: `LINKS_PER_WINDOW` Download-Links je `WINDOW`.
+pub struct RateLimiter {
+    map: Mutex<HashMap<IpAddr, (u32, Instant)>>,
+    limit: u32,
+    window: Duration,
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new(LINKS_PER_WINDOW, WINDOW)
+    }
+}
 
 impl RateLimiter {
+    pub fn new(limit: u32, window: Duration) -> Self {
+        Self {
+            map: Mutex::default(),
+            limit,
+            window,
+        }
+    }
+
     pub fn allow(&self, ip: IpAddr) -> bool {
-        let mut map = self.0.lock().unwrap();
+        let mut map = self.map.lock().unwrap();
         let now = Instant::now();
         if map.len() > 10_000 {
-            map.retain(|_, (_, start)| now.duration_since(*start) < WINDOW);
+            map.retain(|_, (_, start)| now.duration_since(*start) < self.window);
         }
         let entry = map.entry(ip).or_insert((0, now));
-        if now.duration_since(entry.1) >= WINDOW {
+        if now.duration_since(entry.1) >= self.window {
             *entry = (0, now);
         }
         entry.0 += 1;
-        entry.0 <= LINKS_PER_WINDOW
+        entry.0 <= self.limit
     }
 }
