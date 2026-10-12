@@ -50,6 +50,12 @@ struct Info {
     curseforge: bool,
     /// Rechtliche Angaben aus der Admin-Seite (Impressum, Datenschutz, Kontakt).
     legal: Legal,
+    /// Hinweis an alle Launcher (F-60), solange er gilt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    banner: Option<crate::settings::Banner>,
+    /// Ältere Launcher müssen aktualisieren, um TwoGG-Packs und Events zu nutzen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min_launcher_version: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -72,6 +78,9 @@ async fn info(AxumState(state): AxumState<State>) -> ApiResult<Json<Info>> {
         .fetch_one(&state.db)
         .await?;
     let settings = crate::settings::load(&state).await?;
+    let banner = settings.banner(db::now());
+    let min_launcher_version =
+        (!settings.min_launcher_version.is_empty()).then(|| settings.min_launcher_version.clone());
     let game_server = (!settings.game_server_address.is_empty()).then(|| GameServer {
         name: if settings.game_server_name.is_empty() {
             "TwoGG Server".into()
@@ -87,6 +96,8 @@ async fn info(AxumState(state): AxumState<State>) -> ApiResult<Json<Info>> {
         packs,
         game_server,
         curseforge: state.config.curseforge_key.is_some(),
+        banner,
+        min_launcher_version,
         legal: Legal {
             imprint_url: some(settings.imprint_url),
             privacy_url: some(settings.privacy_url),

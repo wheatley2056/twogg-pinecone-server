@@ -1484,3 +1484,62 @@ async fn withdrawn_versions_disappear_but_launchers_learn_why() {
         "{actions:?}"
     );
 }
+
+#[tokio::test]
+async fn banner_and_min_launcher_version_in_info() {
+    let app = setup().await;
+    let token = login(&app).await;
+    let t = Some(token.as_str());
+    let (_, info) = app.json("GET", "/api/v1/info", None, None).await;
+    assert!(info.get("banner").is_none() && info.get("minLauncherVersion").is_none());
+
+    let (status, v) = app
+        .json(
+            "PUT",
+            "/api/admin/settings/main",
+            t,
+            Some(
+                json!({ "bannerText": "Wartung heute ab 20 Uhr", "bannerLevel": "warning",
+                         "bannerLink": "http://unsicher.example", "minLauncherVersion": "0.9.8" }),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "Link nur https: {v}");
+    let (status, _) = app
+        .json(
+            "PUT",
+            "/api/admin/settings/main",
+            t,
+            Some(json!({ "minLauncherVersion": "neu" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, v) = app
+        .json(
+            "PUT",
+            "/api/admin/settings/main",
+            t,
+            Some(
+                json!({ "bannerText": "Wartung heute ab 20 Uhr", "bannerLevel": "warning",
+                         "bannerLink": "https://twogg.de/status", "minLauncherVersion": "0.9.8" }),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let (_, info) = app.json("GET", "/api/v1/info", None, None).await;
+    assert_eq!(info["banner"]["text"], "Wartung heute ab 20 Uhr");
+    assert_eq!(info["banner"]["level"], "warning");
+    assert_eq!(info["banner"]["link"], "https://twogg.de/status");
+    assert_eq!(info["minLauncherVersion"], "0.9.8");
+
+    // Abgelaufenes Banner wird nicht mehr ausgeliefert.
+    app.json(
+        "PUT",
+        "/api/admin/settings/main",
+        t,
+        Some(json!({ "bannerText": "Alt", "bannerUntil": 1 })),
+    )
+    .await;
+    let (_, info) = app.json("GET", "/api/v1/info", None, None).await;
+    assert!(info.get("banner").is_none(), "{info}");
+}

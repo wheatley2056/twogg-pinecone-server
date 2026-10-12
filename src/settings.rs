@@ -31,18 +31,84 @@ pub struct Settings {
     /// kein Chat- oder Forenlink ist).
     #[serde(default, deserialize_with = "null_default")]
     pub contact_email: String,
+    /// Hinweis an alle Launcher (F-60); leer = kein Banner.
+    #[serde(default, deserialize_with = "null_default")]
+    pub banner_text: String,
+    /// `info` oder `warning`.
+    #[serde(default, deserialize_with = "null_default")]
+    pub banner_level: String,
+    /// Optionaler Link (https) im Banner.
+    #[serde(default, deserialize_with = "null_default")]
+    pub banner_link: String,
+    /// Banner bis zu diesem Zeitpunkt (Unix-Sekunden); 0 = ohne Ende.
+    #[serde(default, deserialize_with = "null_default")]
+    pub banner_until: i64,
+    /// Ältere Launcher müssen aktualisieren, um TwoGG-Packs und Events zu nutzen (z. B. `0.9.8`).
+    #[serde(default, deserialize_with = "null_default")]
+    pub min_launcher_version: String,
+}
+
+/// Banner für `/api/v1/info`, solange es gilt.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Banner {
+    /// Ändert sich mit Text, Stufe oder Link: Ein geändertes Banner erscheint wieder (AK-60.1).
+    pub id: String,
+    pub level: String,
+    pub text: String,
+    pub link: Option<String>,
+    pub until: Option<i64>,
+}
+
+impl Settings {
+    pub fn banner(&self, now: i64) -> Option<Banner> {
+        if self.banner_text.is_empty() || (self.banner_until > 0 && self.banner_until <= now) {
+            return None;
+        }
+        use sha2::Digest;
+        let level = if self.banner_level == "warning" {
+            "warning"
+        } else {
+            "info"
+        };
+        let hash = sha2::Sha256::digest(format!(
+            "{level}\n{}\n{}",
+            self.banner_text, self.banner_link
+        ));
+        Some(Banner {
+            id: hash.iter().take(6).map(|b| format!("{b:02x}")).collect(),
+            level: level.into(),
+            text: self.banner_text.clone(),
+            link: (!self.banner_link.is_empty()).then(|| self.banner_link.clone()),
+            until: (self.banner_until > 0).then_some(self.banner_until),
+        })
+    }
+}
+
+/// Versionsnummer `x.y.z` (nur Ziffern).
+pub fn valid_version(v: &str) -> bool {
+    let parts: Vec<&str> = v.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn main_id() -> String {
     "main".into()
 }
 
-const KEYS: [&str; 5] = [
+const KEYS: [&str; 10] = [
     "game_server_name",
     "game_server_address",
     "imprint_url",
     "privacy_url",
     "contact_email",
+    "banner_text",
+    "banner_level",
+    "banner_link",
+    "banner_until",
+    "min_launcher_version",
 ];
 
 pub async fn load(state: &State) -> ApiResult<Settings> {
@@ -51,6 +117,7 @@ pub async fn load(state: &State) -> ApiResult<Settings> {
         .await?;
     let mut s = Settings {
         id: main_id(),
+        banner_level: "info".into(),
         ..Default::default()
     };
     for (k, v) in rows {
@@ -60,6 +127,11 @@ pub async fn load(state: &State) -> ApiResult<Settings> {
             "imprint_url" => s.imprint_url = v,
             "privacy_url" => s.privacy_url = v,
             "contact_email" => s.contact_email = v,
+            "banner_text" => s.banner_text = v,
+            "banner_level" => s.banner_level = v,
+            "banner_link" => s.banner_link = v,
+            "banner_until" => s.banner_until = v.parse().unwrap_or(0),
+            "min_launcher_version" => s.min_launcher_version = v,
             _ => {}
         }
     }
@@ -117,12 +189,44 @@ pub async fn put(
     if !valid_email(&s.contact_email) {
         return Err(ApiError::bad_request("Ungültige E-Mail-Adresse"));
     }
+    s.banner_text = s
+        .banner_text
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(300)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    s.banner_level = if s.banner_level == "warning" {
+        "warning".into()
+    } else {
+        "info".into()
+    };
+    s.banner_link = s.banner_link.trim().to_string();
+    if !valid_url(&s.banner_link) {
+        return Err(ApiError::bad_request(
+            "Der Banner-Link braucht eine https-Adresse",
+        ));
+    }
+    s.banner_until = s.banner_until.max(0);
+    s.min_launcher_version = s.min_launcher_version.trim().to_string();
+    if !s.min_launcher_version.is_empty() && !valid_version(&s.min_launcher_version) {
+        return Err(ApiError::bad_request(
+            "Mindestversion im Format 0.9.8 angeben (oder leer lassen)",
+        ));
+    }
+    let until = s.banner_until.to_string();
     let values = [
         &s.game_server_name,
         &s.game_server_address,
         &s.imprint_url,
         &s.privacy_url,
         &s.contact_email,
+        &s.banner_text,
+        &s.banner_level,
+        &s.banner_link,
+        &until,
+        &s.min_launcher_version,
     ];
     let mut tx = state.db.begin().await?;
     for (key, value) in KEYS.iter().zip(values) {
@@ -147,6 +251,32 @@ mod tests {
         assert!(valid_address(""));
         assert!(!valid_address("https://twogg.de"));
         assert!(!valid_address("mc twogg"));
+    }
+
+    #[test]
+    fn banner_and_versions() {
+        let mut s = Settings {
+            banner_text: "Wartung heute ab 20 Uhr".into(),
+            banner_level: "warning".into(),
+            ..Default::default()
+        };
+        let b = s.banner(100).unwrap();
+        assert_eq!(b.level, "warning");
+        assert_eq!(b.id.len(), 12);
+        s.banner_until = 100;
+        assert!(s.banner(100).is_none(), "abgelaufen");
+        s.banner_until = 0;
+        s.banner_text = "Wartung heute ab 21 Uhr".into();
+        assert_ne!(
+            s.banner(100).unwrap().id,
+            b.id,
+            "geänderter Text → neues Banner"
+        );
+        s.banner_text.clear();
+        assert!(s.banner(100).is_none());
+        assert!(valid_version("0.9.8"));
+        assert!(!valid_version("0.9"));
+        assert!(!valid_version("1.0.0-beta"));
     }
 
     #[test]
