@@ -56,6 +56,14 @@ export const dataProvider: DataProvider = {
   async update(resource, params) {
     return base.update(resource, { ...params, data: await prepare(resource, params.data) });
   },
+  /** Version zurückziehen oder wiederherstellen (F-62). */
+  async versionAction(id: string, action: "withdraw" | "restore", body?: { reason: string }) {
+    const { json } = await httpClient(`${API}/versions/${encodeURIComponent(id)}/${action}`, {
+      method: "POST",
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return json;
+  },
   async getStats() {
     const { json } = await httpClient(`${API}/stats`);
     return json as Stats;

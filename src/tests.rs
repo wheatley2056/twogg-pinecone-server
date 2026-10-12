@@ -1380,3 +1380,107 @@ async fn admin_accounts_roles_and_audit() {
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn withdrawn_versions_disappear_but_launchers_learn_why() {
+    let app = setup().await;
+    let token = login(&app).await;
+    let t = Some(token.as_str());
+    app.json(
+        "POST",
+        "/api/admin/packs",
+        t,
+        Some(json!({ "id": "avalon", "title": "Avalon", "visibility": "public" })),
+    )
+    .await;
+    let upload = |version: &'static str| {
+        let token = token.clone();
+        let app = &app;
+        async move {
+            let (ct, body) = multipart(
+                &[("packId", "avalon"), ("version", version)],
+                Some(("a.mrpack", &mrpack())),
+            );
+            let (status, _, bytes) = app
+                .send(
+                    Request::post("/api/admin/versions")
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .header(header::CONTENT_TYPE, ct)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK);
+            serde_json::from_slice::<Value>(&bytes).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let old = upload("1.0.0").await;
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let new = upload("1.1.0").await;
+
+    let (status, _) = app
+        .json(
+            "POST",
+            &format!("/api/admin/versions/{new}/withdraw"),
+            t,
+            Some(json!({ "reason": "  " })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "Grund ist Pflicht");
+    let (status, v) = app
+        .json(
+            "POST",
+            &format!("/api/admin/versions/{new}/withdraw"),
+            t,
+            Some(json!({ "reason": "Absturz beim Betreten des Nethers" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["withdrawnReason"], "Absturz beim Betreten des Nethers");
+
+    // Öffentlich: neueste ist wieder die alte, die zurückgezogene steht nur unter `withdrawn`.
+    let (_, pack) = app.json("GET", "/api/v1/packs/avalon", None, None).await;
+    assert_eq!(pack["latest"]["id"], old.as_str());
+    assert_eq!(pack["versions"].as_array().unwrap().len(), 1);
+    assert_eq!(pack["withdrawn"][0]["id"], new.as_str());
+    assert_eq!(
+        pack["withdrawn"][0]["reason"],
+        "Absturz beim Betreten des Nethers"
+    );
+    // Download geht nicht mehr (410 mit Grund).
+    let req = Request::post(format!("/api/v1/packs/avalon/versions/{new}/download"))
+        .header("x-pinecone-client", "pinecone/1.0.0")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, bytes) = app.send(req).await;
+    assert_eq!(status, StatusCode::GONE);
+    assert!(String::from_utf8_lossy(&bytes).contains("Nether"));
+    // Wiederherstellen (AK-62.1).
+    let (status, _) = app
+        .json(
+            "POST",
+            &format!("/api/admin/versions/{new}/restore"),
+            t,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, pack) = app.json("GET", "/api/v1/packs/avalon", None, None).await;
+    assert_eq!(pack["latest"]["id"], new.as_str());
+    assert!(pack["withdrawn"].as_array().unwrap().is_empty());
+    // Im Protokoll.
+    let (_, log) = app.json("GET", "/api/admin/audit", t, None).await;
+    let actions: Vec<&str> = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["action"].as_str().unwrap())
+        .collect();
+    assert!(
+        actions.contains(&"withdraw") && actions.contains(&"restore"),
+        "{actions:?}"
+    );
+}

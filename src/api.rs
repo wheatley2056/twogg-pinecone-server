@@ -192,17 +192,37 @@ pub struct PackDto {
     event_id: Option<String>,
     /// Öffentliche Seite des Packs (`/packs/<id>`).
     page_url: String,
+    /// Zurückgezogene Versionen mit Grund (F-62), damit Launcher sie erkennen.
+    withdrawn: Vec<WithdrawnDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WithdrawnDto {
+    id: String,
+    version: String,
+    reason: String,
 }
 
 fn pack_dto(base: &str, p: Pack, versions: Vec<Version>, full: bool) -> PackDto {
     let downloads = versions.iter().map(|v| v.downloads).sum();
-    // „Neueste“ = neueste Release-Version, sonst die neueste überhaupt.
+    let (withdrawn, versions): (Vec<Version>, Vec<Version>) =
+        versions.into_iter().partition(Version::withdrawn);
+    // „Neueste“ = neueste Release-Version, sonst die neueste überhaupt (ohne zurückgezogene).
     let latest = versions
         .iter()
         .find(|v| v.channel == "release")
         .or(versions.first())
         .cloned()
         .map(VersionDto::from);
+    let withdrawn = withdrawn
+        .into_iter()
+        .map(|v| WithdrawnDto {
+            id: v.id,
+            version: v.version,
+            reason: v.withdrawn_reason.unwrap_or_default(),
+        })
+        .collect();
     PackDto {
         icon_url: p.icon.as_deref().map(|i| media_url(base, i)),
         page_url: crate::pages::page_url(base, &p.id),
@@ -216,6 +236,7 @@ fn pack_dto(base: &str, p: Pack, versions: Vec<Version>, full: bool) -> PackDto 
         downloads,
         latest,
         event_id: p.event_id,
+        withdrawn,
     }
 }
 
@@ -230,7 +251,7 @@ async fn packs(AxumState(state): AxumState<State>) -> ApiResult<Json<Vec<PackDto
     for p in rows {
         let versions = db::versions_of(&state.db, &p.id).await?;
         // Packs ohne Version sind (noch) nicht installierbar.
-        if !versions.is_empty() {
+        if versions.iter().any(|v| !v.withdrawn()) {
             out.push(pack_dto(&state.config.public_url, p, versions, false));
         }
     }
@@ -309,6 +330,15 @@ async fn download_link(
     .bind(&id)
     .fetch_one(&state.db)
     .await?;
+    if v.withdrawn() {
+        return Err(ApiError::new(
+            StatusCode::GONE,
+            format!(
+                "Diese Version wurde zurückgezogen: {}",
+                v.withdrawn_reason.as_deref().unwrap_or("ohne Angabe")
+            ),
+        ));
+    }
     let expires = db::now() + state.config.download_ttl as i64;
     let token = files::sign_download(&state.secret, &v.id, expires);
     Ok(Json(DownloadLink {

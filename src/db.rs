@@ -157,6 +157,11 @@ CREATE TABLE audit_log (
 );
 CREATE INDEX audit_at ON audit_log(at DESC);
 "#,
+    r#"
+-- Zurückgezogene Pack-Versionen (F-62): bleiben gespeichert, erscheinen aber nicht mehr
+ALTER TABLE versions ADD COLUMN withdrawn_reason TEXT;
+ALTER TABLE versions ADD COLUMN withdrawn_at INTEGER;
+"#,
 ];
 
 pub async fn connect(path: &Path) -> anyhow::Result<SqlitePool> {
@@ -255,6 +260,17 @@ pub struct Version {
     pub sha512: String,
     pub downloads: i64,
     pub published_at: i64,
+    /// Zurückgezogen (F-62): Grund und Zeitpunkt; die Version wird nicht mehr angeboten.
+    #[sqlx(default)]
+    pub withdrawn_reason: Option<String>,
+    #[sqlx(default)]
+    pub withdrawn_at: Option<i64>,
+}
+
+impl Version {
+    pub fn withdrawn(&self) -> bool {
+        self.withdrawn_at.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

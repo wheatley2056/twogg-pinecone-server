@@ -164,7 +164,7 @@ async fn page(AxumState(state): AxumState<State>, Path(id): Path<String>) -> Res
 
     // Versionen (Dateien)
     let mut rows = String::new();
-    for v in &versions {
+    for v in versions.iter().filter(|v| !v.withdrawn()) {
         let changelog = if v.changelog.trim().is_empty() {
             String::new()
         } else {
@@ -464,10 +464,9 @@ async fn asset(Path(file): Path<String>) -> Response {
 
 /// Neueste Release-Version, sonst die neueste überhaupt (wie die API).
 fn latest(versions: &[Version]) -> Option<&Version> {
-    versions
-        .iter()
-        .find(|v| v.channel == "release")
-        .or(versions.first())
+    let mut offered = versions.iter().filter(|v| !v.withdrawn());
+    let first = offered.clone().next();
+    offered.find(|v| v.channel == "release").or(first)
 }
 
 fn loader_name(v: &Version) -> String {

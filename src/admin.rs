@@ -33,6 +33,8 @@ pub fn routes(state: State) -> Router<State> {
             "/versions/{id}",
             get(get_version).put(update_version).delete(delete_version),
         )
+        .route("/versions/{id}/withdraw", post(withdraw_version))
+        .route("/versions/{id}/restore", post(restore_version))
         .route(
             "/recommendations",
             get(crate::recommendations::list_admin).post(crate::recommendations::create),
@@ -733,6 +735,71 @@ async fn delete_version(
         .await?;
     let _ = tokio::fs::remove_file(files::packs_dir(&state.config.data_dir).join(&v.file)).await;
     Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+struct WithdrawRequest {
+    reason: String,
+}
+
+/// Version zurückziehen (F-62): nicht mehr in Listen, Updates und Downloads; Launcher mit dieser
+/// Version bekommen den Grund angezeigt. Datei und Zähler bleiben erhalten.
+async fn withdraw_version(
+    AxumState(state): AxumState<State>,
+    _: Admin,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<WithdrawRequest>,
+) -> ApiResult<Json<Version>> {
+    let reason: String = req
+        .reason
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(300)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if reason.is_empty() {
+        return Err(ApiError::bad_request(
+            "Bitte einen Grund angeben – Spieler sehen ihn im Launcher",
+        ));
+    }
+    let r = sqlx::query(
+        "UPDATE versions SET withdrawn_reason = ?, withdrawn_at = ? WHERE id = ? AND withdrawn_at IS NULL",
+    )
+    .bind(&reason)
+    .bind(db::now())
+    .bind(&id)
+    .execute(&state.db)
+    .await?;
+    if r.rows_affected() == 0 {
+        return Err(ApiError::bad_request(
+            "Version nicht gefunden oder schon zurückgezogen",
+        ));
+    }
+    Ok(Json(
+        sqlx::query_as("SELECT * FROM versions WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&state.db)
+            .await?,
+    ))
+}
+
+/// Zurückgezogene Version wieder anbieten (AK-62.1).
+async fn restore_version(
+    AxumState(state): AxumState<State>,
+    _: Admin,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Version>> {
+    sqlx::query("UPDATE versions SET withdrawn_reason = NULL, withdrawn_at = NULL WHERE id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+    Ok(Json(
+        sqlx::query_as("SELECT * FROM versions WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&state.db)
+            .await?,
+    ))
 }
 
 // ---------- Neuigkeiten ----------
