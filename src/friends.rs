@@ -77,7 +77,7 @@ fn hash_token(token: &str) -> String {
 }
 
 /// UUID ohne Bindestriche, klein (wie bei Mojang).
-fn normalize_uuid(s: &str) -> Option<String> {
+pub(crate) fn normalize_uuid(s: &str) -> Option<String> {
     let u: String = s
         .chars()
         .filter(|c| *c != '-')
@@ -298,6 +298,10 @@ struct FriendsDto {
     friends: Vec<FriendDto>,
     incoming: Vec<PlayerDto>,
     outgoing: Vec<PlayerDto>,
+    /// Offene Einladungen an mich (F-56).
+    invites: Vec<crate::social::InviteDto>,
+    /// Meine Einladungen der letzten 15 Minuten mit Status (offen, angenommen, abgelehnt).
+    sent_invites: Vec<crate::social::InviteDto>,
 }
 
 async fn friends(
@@ -359,10 +363,13 @@ async fn friends(
          WHERE r.from_uuid = ? ORDER BY r.created_at DESC",
     )
     .await?;
+    let (invites, sent_invites) = crate::social::invites_for(&state, &player.uuid).await?;
     Ok(Json(FriendsDto {
         friends,
         incoming,
         outgoing,
+        invites,
+        sent_invites,
     }))
 }
 
@@ -374,7 +381,7 @@ fn pair(a: &str, b: &str) -> (String, String) {
     }
 }
 
-async fn are_friends(state: &State, a: &str, b: &str) -> ApiResult<bool> {
+pub(crate) async fn are_friends(state: &State, a: &str, b: &str) -> ApiResult<bool> {
     let (x, y) = pair(a, b);
     let row: Option<(i64,)> =
         sqlx::query_as("SELECT 1 FROM friendships WHERE a_uuid = ? AND b_uuid = ?")
@@ -407,30 +414,40 @@ async fn befriend(state: &State, a: &str, b: &str) -> ApiResult<()> {
 
 #[derive(Deserialize)]
 struct FriendRequest {
-    name: String,
+    #[serde(default)]
+    name: Option<String>,
+    /// Freundescode statt Spielername (F-57).
+    #[serde(default)]
+    code: Option<String>,
 }
 
-/// Anfrage per Spielername. Der andere muss Pinecone schon einmal benutzt haben. Hat er selbst
-/// schon angefragt, seid ihr sofort befreundet.
+/// Anfrage per Spielername oder Freundescode. Der andere muss Pinecone schon einmal benutzt
+/// haben. Hat er selbst schon angefragt, seid ihr sofort befreundet.
 async fn request(
     AxumState(state): AxumState<State>,
     player: Player,
     JsonBody(req): JsonBody<FriendRequest>,
 ) -> ApiResult<Json<Value>> {
-    let name = req.name.trim();
-    if !valid_name(name) {
-        return Err(ApiError::bad_request("Ungültiger Spielername"));
-    }
-    let target: Option<(String, String)> =
-        sqlx::query_as("SELECT uuid, name FROM players WHERE name_lower = ?")
-            .bind(name.to_ascii_lowercase())
-            .fetch_optional(&state.db)
-            .await?;
-    let Some((uuid, target_name)) = target else {
-        return Err(ApiError::new(
-            axum::http::StatusCode::NOT_FOUND,
-            format!("{name} nutzt Pinecone noch nicht"),
-        ));
+    let (uuid, target_name) = match (req.code.as_deref(), req.name.as_deref()) {
+        (Some(code), _) => crate::social::player_by_code(&state, &player, code).await?,
+        (None, Some(name)) => {
+            let name = name.trim();
+            if !valid_name(name) {
+                return Err(ApiError::bad_request("Ungültiger Spielername"));
+            }
+            let target: Option<(String, String)> =
+                sqlx::query_as("SELECT uuid, name FROM players WHERE name_lower = ?")
+                    .bind(name.to_ascii_lowercase())
+                    .fetch_optional(&state.db)
+                    .await?;
+            target.ok_or_else(|| {
+                ApiError::new(
+                    axum::http::StatusCode::NOT_FOUND,
+                    format!("{name} nutzt Pinecone noch nicht"),
+                )
+            })?
+        }
+        (None, None) => return Err(ApiError::bad_request("Spielername oder Code fehlt")),
     };
     if uuid == player.uuid {
         return Err(ApiError::bad_request("Das bist du selbst"));
@@ -571,6 +588,9 @@ pub async fn cleanup_loop(state: State) {
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(86_400));
     loop {
         tick.tick().await;
+        if let Err(e) = crate::social::cleanup(&state).await {
+            tracing::warn!("Aufräumen von Einladungen und Freigaben: {e}");
+        }
         match cleanup(&state).await {
             Ok(0) => {}
             Ok(n) => tracing::info!("{n} inaktive Spielerprofile gelöscht"),

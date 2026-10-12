@@ -16,6 +16,7 @@ mod mrpack;
 mod pages;
 mod recommendations;
 mod settings;
+mod social;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -118,6 +119,7 @@ pub struct AppState {
     /// Ratenbegrenzung für den CurseForge-Proxy.
     pub cf_limiter: api::RateLimiter,
     pub challenges: friends::Challenges,
+    pub code_failures: social::CodeFailures,
     pub http: reqwest::Client,
 }
 
@@ -136,6 +138,7 @@ pub async fn build_state(config: Config) -> anyhow::Result<State> {
         limiter: api::RateLimiter::default(),
         cf_limiter: api::RateLimiter::new(curseforge::REQUESTS_PER_MINUTE, curseforge::WINDOW),
         challenges: friends::Challenges::default(),
+        code_failures: social::CodeFailures::default(),
         http: reqwest::Client::builder()
             .user_agent(concat!("pinecone-server/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(10))
@@ -160,6 +163,7 @@ pub fn router(state: State) -> Router {
             "/api/v1",
             api::routes()
                 .merge(friends::routes())
+                .merge(social::routes())
                 .merge(curseforge::routes()),
         )
         .nest(

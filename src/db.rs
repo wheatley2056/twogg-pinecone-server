@@ -108,6 +108,34 @@ CREATE TABLE recommendations (
     created_at   INTEGER NOT NULL
 );
 "#,
+    r#"
+-- Freundescode (F-57): eindeutig, neu erzeugbar
+ALTER TABLE players ADD COLUMN friend_code TEXT;
+CREATE UNIQUE INDEX players_friend_code ON players(friend_code);
+-- Einladungen auf einen Server (F-56), 15 Minuten gültig
+CREATE TABLE invites (
+    id         TEXT PRIMARY KEY,
+    from_uuid  TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    to_uuid    TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    server     TEXT NOT NULL,
+    pack       TEXT,
+    instance   TEXT,
+    -- open, accepted, declined, replaced (durch eine neuere ersetzt)
+    status     TEXT NOT NULL DEFAULT 'open',
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX invites_to ON invites(to_uuid, expires_at);
+CREATE INDEX invites_from ON invites(from_uuid, created_at);
+-- Geteilte Sync-Packs (F-58), 30 Tage gültig
+CREATE TABLE sync_shares (
+    code       TEXT PRIMARY KEY,
+    owner_uuid TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    data       TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+"#,
 ];
 
 pub async fn connect(path: &Path) -> anyhow::Result<SqlitePool> {

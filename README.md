@@ -56,7 +56,10 @@ Datenbank-Migrationen laufen beim Start automatisch.
 | `GET /me`, `POST /presence` | eigenes Profil, Präsenz mit Aktivität (online = letzte 90 s) |
 | `DELETE /me` | eigenes Spielerprofil mit Sitzungen, Anfragen und Freundschaften löschen |
 | `GET /curseforge/v1/mods/search`, `GET /curseforge/v1/mods/{id}/files`, `POST /curseforge/v1/mods/files`, `POST /curseforge/v1/mods` | CurseForge-Proxy (Header `X-Pinecone-Client`, 240 Anfragen/min je IP) |
-| `GET /friends`, `POST /friends/requests`, `POST /friends/requests/{uuid}/accept`, `DELETE /friends/requests/{uuid}`, `DELETE /friends/{uuid}` | Freunde und Anfragen (per Spielername) |
+| `GET /friends`, `POST /friends/requests`, `POST /friends/requests/{uuid}/accept`, `DELETE /friends/requests/{uuid}`, `DELETE /friends/{uuid}` | Freunde, Anfragen (per Spielername `{name}` oder Freundescode `{code}`) und Einladungen (`invites`, `sentInvites`) |
+| `GET /friends/code`, `POST /friends/code` | eigener Freundescode `XXXX-XXXX-XX`; `POST` erzeugt einen neuen, der alte gilt sofort nicht mehr. Höchstens 10 falsche Codes je Spieler und Stunde |
+| `POST /invites` `{to, server, pack?, instance?}`, `POST /invites/{id}/answer` `{accept}` | Freund auf einen Server einladen (15 min gültig, höchstens 10 je Minute; `pack` nur als `pinecone://`-Link) |
+| `POST /sync-shares` `{data}`, `GET /sync-shares/{code}` | Sync-Pack teilen (≤ 64 KB, 30 Tage, höchstens 20 je Spieler); Abruf nur angemeldet |
 
 `GET /packs/{id}` in der API enthält `pageUrl`, die öffentliche Seite des Packs.
 
