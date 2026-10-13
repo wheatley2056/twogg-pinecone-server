@@ -51,7 +51,7 @@ pub struct Mrpack {
     pub loader: Option<(String, String)>,
 }
 
-fn safe_relative(name: &str) -> bool {
+pub fn safe_relative(name: &str) -> bool {
     !name.is_empty()
         && !name.contains('\\')
         && Path::new(name)

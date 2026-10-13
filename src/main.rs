@@ -16,6 +16,7 @@ mod markdown;
 mod mrpack;
 mod pages;
 mod recommendations;
+mod serverpack;
 mod settings;
 mod social;
 mod stats;
@@ -61,6 +62,10 @@ pub struct Config {
     /// Spielerprofile der Freundesliste, die so viele Tage nicht mehr gesehen wurden, werden
     /// samt Freundschaften gelöscht (0 = nie).
     pub player_retention_days: u64,
+    /// Fabric-Meta für den Server-Starter in Server-Packs (in Tests ein Mock).
+    pub fabric_meta: String,
+    /// Zusätzlich erlaubte Download-Hosts für Server-Packs (nur Tests).
+    pub extra_download_hosts: Vec<String>,
 }
 
 impl Config {
@@ -107,6 +112,11 @@ impl Config {
             player_retention_days: var("PINECONE_PLAYER_RETENTION_DAYS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(friends::DEFAULT_RETENTION_DAYS),
+            fabric_meta: var("PINECONE_FABRIC_META")
+                .unwrap_or_else(|| serverpack::DEFAULT_FABRIC_META.into())
+                .trim_end_matches('/')
+                .to_string(),
+            extra_download_hosts: Vec::new(),
         })
     }
 }
@@ -124,6 +134,8 @@ pub struct AppState {
     pub code_failures: social::CodeFailures,
     /// Heute schon gezählte Launcher (nur im Speicher).
     pub seen_today: stats::SeenToday,
+    /// Laufende Erzeugungen von Server-Packs.
+    pub server_packs: serverpack::Jobs,
     pub http: reqwest::Client,
 }
 
@@ -145,6 +157,7 @@ pub async fn build_state(config: Config) -> anyhow::Result<State> {
         challenges: friends::Challenges::default(),
         code_failures: social::CodeFailures::default(),
         seen_today: stats::SeenToday::default(),
+        server_packs: serverpack::Jobs::default(),
         http: reqwest::Client::builder()
             .user_agent(concat!("pinecone-server/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(10))
@@ -177,6 +190,7 @@ pub fn router(state: State) -> Router {
             admin::routes(state.clone()).layer(DefaultBodyLimit::max(MAX_UPLOAD)),
         )
         .route("/dl/{token}", get(api::download))
+        .route("/dl/server/{token}", get(serverpack::download))
         .nest_service(
             "/media",
             tower::ServiceBuilder::new()

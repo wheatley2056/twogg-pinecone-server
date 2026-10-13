@@ -31,6 +31,21 @@ async fn setup_with(
     curseforge_key: Option<String>,
     curseforge_api: String,
 ) -> TestApp {
+    setup_full(
+        session_server,
+        curseforge_key,
+        curseforge_api,
+        "http://127.0.0.1:9".into(),
+    )
+    .await
+}
+
+async fn setup_full(
+    session_server: String,
+    curseforge_key: Option<String>,
+    curseforge_api: String,
+    fabric_meta: String,
+) -> TestApp {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {
         addr: "127.0.0.1:0".parse().unwrap(),
@@ -45,6 +60,8 @@ async fn setup_with(
         curseforge_key,
         curseforge_api,
         player_retention_days: 365,
+        fabric_meta,
+        extra_download_hosts: vec!["127.0.0.1".into()],
     };
     std::fs::create_dir_all(&config.admin_dir).unwrap();
     std::fs::write(config.admin_dir.join("index.html"), "<html>admin</html>").unwrap();
@@ -944,6 +961,8 @@ async fn cleanup_removes_long_inactive_players() {
         curseforge_key: None,
         curseforge_api: "http://127.0.0.1:9".into(),
         player_retention_days: 30,
+        fabric_meta: "http://127.0.0.1:9".into(),
+        extra_download_hosts: Vec::new(),
     };
     let state = build_state(config).await.unwrap();
     let now = crate::db::now();
@@ -1649,4 +1668,216 @@ async fn launcher_post(t: &TestApp, uri: &str) -> (StatusCode, axum::http::Heade
         headers,
         serde_json::from_slice(&body).unwrap_or(Value::Null),
     )
+}
+
+fn server_test_pack(host: &str, sha512: &str) -> Vec<u8> {
+    let mut buf = std::io::Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(&mut buf);
+    let opts = zip::write::SimpleFileOptions::default();
+    zip.start_file("modrinth.index.json", opts).unwrap();
+    let index = json!({ "formatVersion": 1, "game": "minecraft", "versionId": "6.5.0", "name": "Avalon",
+            "files": [
+                { "path": "mods/server.jar", "hashes": { "sha1": sha1_hex(b"server-mod"), "sha512": sha512 },
+                  "env": { "client": "required", "server": "required" }, "downloads": [format!("{host}/mods/server.jar")] },
+                { "path": "mods/client.jar", "hashes": { "sha1": sha1_hex(b"client-mod") },
+                  "env": { "client": "required", "server": "unsupported" }, "downloads": [format!("{host}/mods/client.jar")] },
+            ],
+            "dependencies": { "minecraft": "1.21.1", "fabric-loader": "0.19.5" } });
+    zip.write_all(index.to_string().as_bytes()).unwrap();
+    for (name, body) in [
+        ("overrides/config/twogg.json", "client"),
+        ("overrides/server.properties", "motd=Avalon"),
+        ("server-overrides/config/twogg.json", "server"),
+        ("client-overrides/options.txt", "fov:90"),
+    ] {
+        zip.start_file(name, opts).unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+    buf.into_inner()
+}
+
+/// Nachgebaute Download-Hosts und Fabric-Meta für Server-Packs.
+async fn mock_downloads() -> String {
+    use axum::routing::get;
+    let app = axum::Router::new()
+        .route("/mods/server.jar", get(|| async { "server-mod" }))
+        .route("/mods/client.jar", get(|| async { "client-mod" }))
+        .route(
+            "/v2/versions/installer",
+            get(|| async {
+                r#"[{"version":"1.1.0","stable":false},{"version":"1.0.3","stable":true}]"#
+            }),
+        )
+        .route(
+            "/v2/versions/loader/1.21.1/0.19.5/1.0.3/server/jar",
+            get(|| async { "fabric-launcher" }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+fn sha512_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha512::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn sha1_hex(data: &[u8]) -> String {
+    use sha1::Digest;
+    sha1::Sha1::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+#[tokio::test]
+async fn server_pack_leaves_out_client_mods() {
+    let host = mock_downloads().await;
+    let app = setup_full(
+        "http://127.0.0.1:9".into(),
+        None,
+        "http://127.0.0.1:9".into(),
+        host.clone(),
+    )
+    .await;
+    let token = login(&app).await;
+    let t = Some(token.as_str());
+    app.json(
+        "POST",
+        "/api/admin/packs",
+        t,
+        Some(json!({ "id": "avalon", "title": "Avalon", "visibility": "public" })),
+    )
+    .await;
+
+    let pack = server_test_pack(&host, &sha512_hex(b"server-mod"));
+    let (ct, body) = multipart(&[("packId", "avalon")], Some(("a.mrpack", &pack)));
+    let (status, _, bytes) = app
+        .send(
+            Request::post("/api/admin/versions")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, ct)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let vid = serde_json::from_slice::<Value>(&bytes).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let uri = format!("/api/admin/versions/{vid}/server-pack");
+
+    let (status, _) = app.json("GET", &uri, None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, s) = app.json("GET", &uri, t, None).await;
+    assert_eq!(s["state"], "none");
+    let (status, _) = app.json("POST", &format!("{uri}/link"), t, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, s) = app.json("POST", &uri, t, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(s["state"], "building");
+    let mut s = Value::Null;
+    for _ in 0..100 {
+        s = app.json("GET", &uri, t, None).await.1;
+        if s["state"] != "building" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(s["state"], "ready", "{s}");
+    assert_eq!(s["removed"], json!(["client.jar"]));
+    assert_eq!(s["loader"], "Fabric 0.19.5");
+
+    let (_, link) = app.json("POST", &format!("{uri}/link"), t, None).await;
+    let url = link["url"].as_str().unwrap();
+    assert!(url.starts_with("/dl/server/"), "{url}");
+    let (status, headers, file) = app
+        .send(Request::get(url).body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .contains("avalon-6.5.0-server.zip")
+    );
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(file)).unwrap();
+    let read = |zip: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str| {
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name(name).unwrap(), &mut s).unwrap();
+        s
+    };
+    assert_eq!(read(&mut zip, "mods/server.jar"), "server-mod");
+    assert_eq!(
+        read(&mut zip, "fabric-server-launch.jar"),
+        "fabric-launcher"
+    );
+    assert_eq!(read(&mut zip, "config/twogg.json"), "server");
+    assert_eq!(read(&mut zip, "server.properties"), "motd=Avalon");
+    let info = read(&mut zip, "PINECONE-SERVER.txt");
+    assert!(
+        info.contains("client.jar") && info.contains("eula=true"),
+        "{info}"
+    );
+    assert!(zip.by_name("mods/client.jar").is_err());
+    assert!(zip.by_name("options.txt").is_err());
+    assert!(
+        zip.by_name("eula.txt").is_err(),
+        "EULA nimmt der Betreiber selbst an"
+    );
+
+    // Falsche Prüfsumme: Erzeugen schlägt fehl.
+    let bad = server_test_pack(&host, &"0".repeat(128));
+    let (ct, body) = multipart(
+        &[("packId", "avalon"), ("version", "6.5.1")],
+        Some(("b.mrpack", &bad)),
+    );
+    let (_, _, bytes) = app
+        .send(
+            Request::post("/api/admin/versions")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, ct)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+    let bad_id = serde_json::from_slice::<Value>(&bytes).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bad_uri = format!("/api/admin/versions/{bad_id}/server-pack");
+    app.json("POST", &bad_uri, t, None).await;
+    let mut s = Value::Null;
+    for _ in 0..100 {
+        s = app.json("GET", &bad_uri, t, None).await.1;
+        if s["state"] != "building" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(s["state"], "failed", "{s}");
+    assert!(s["error"].as_str().unwrap().contains("Prüfsumme"), "{s}");
+
+    // Gefälschter Link und gelöschte Version.
+    let (status, _, _) = app
+        .send(
+            Request::get(format!("/dl/{}", &url[11..]))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "Server-Link öffnet kein Modpack");
+    app.json("DELETE", &format!("/api/admin/versions/{vid}"), t, None)
+        .await;
+    let (status, _, _) = app
+        .send(Request::get(url).body(Body::empty()).unwrap())
+        .await;
+    assert_ne!(status, StatusCode::OK);
 }

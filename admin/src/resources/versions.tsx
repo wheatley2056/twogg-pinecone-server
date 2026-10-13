@@ -27,6 +27,7 @@ import { Alert, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
 import BlockIcon from "@mui/icons-material/Block";
 import RestoreIcon from "@mui/icons-material/Restore";
 import { bytes, fromUnix } from "../format";
+import { ServerPackCard } from "./ServerPack";
 
 type VersionRecord = { id: string; packId: string; version: string; withdrawnReason?: string | null; withdrawnAt?: number | null };
 
@@ -167,6 +168,7 @@ export const VersionEdit = () => (
   <Edit redirect={(_resource, _id, data) => `packs/${encodeURIComponent(String(data?.packId))}/1`}>
     <SimpleForm>
       <WithdrawControls />
+      <ServerPackCard />
       <ReferenceField source="packId" reference="packs" link="edit">
         <TextField source="title" />
       </ReferenceField>

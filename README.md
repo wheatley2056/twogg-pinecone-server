@@ -39,6 +39,7 @@ Prüfen: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `carg
 | `PINECONE_LAUNCHER_URL` | Download-Seite des Launchers, verlinkt auf den Modpack-Seiten (Standard: Landing Page auf GitHub Pages) |
 | `PINECONE_CURSEFORGE_API_KEY` | CurseForge-API-Schlüssel für den Proxy (siehe unten). Ohne ihn ist CurseForge im Launcher ausgeblendet |
 | `PINECONE_CURSEFORGE_API` | CurseForge-API-Adresse (Standard `https://api.curseforge.com`, für Tests) |
+| `PINECONE_FABRIC_META` | Fabric-Meta für den Server-Starter in Server-Packs (Standard `https://meta.fabricmc.net`) |
 | `PINECONE_PLAYER_RETENTION_DAYS` | Spielerprofile der Freundesliste, die so viele Tage nicht gesehen wurden, werden gelöscht (Standard 365, `0` = nie) |
 
 Datenbank-Migrationen laufen beim Start automatisch.
@@ -97,6 +98,12 @@ keine Skripte und nur eigene Schriften (`assets/fonts`, OFL), Vorschau-Tags für
 
 `GET /dl/{token}` liefert die `.mrpack`-Datei. Die Admin-API liegt unter `/api/admin` (Sitzung per
 Bearer-Token, 12 Stunden gültig, Sperre nach Fehlversuchen).
+
+**Server-Pack:** Auf der Seite einer Version erzeugt „Server-Pack erzeugen“ ein ZIP für den
+Minecraft-Server: alle Dateien außer denen mit `env.server = "unsupported"` (geladen von den
+Modrinth-erlaubten Hosts, per SHA-1 geprüft), `overrides/` und `server-overrides/`, bei Fabric der
+Server-Starter, sonst eine Anleitung für den Loader-Installer in `PINECONE-SERVER.txt`. Die EULA
+nimmt das Pack nicht an. Fertige Packs liegen unter `server-packs/` im Datenordner.
 
 **Hinweis und Mindestversion:** Unter Einstellungen setzt man einen Hinweis für alle Launcher
 (Info oder Warnung, optional mit Link und Ablaufzeit) und eine Mindestversion. Ältere Launcher
