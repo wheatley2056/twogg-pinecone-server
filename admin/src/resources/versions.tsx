@@ -17,6 +17,7 @@ import {
   TextInput,
   AutocompleteInput,
   useDataProvider,
+  useGetList,
   useNotify,
   usePermissions,
   useRecordContext,
@@ -47,6 +48,13 @@ const WithdrawControls = () => {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  // Für die Warnung, wenn danach keine Version des Packs mehr verfügbar ist (AK-62.2).
+  const { data: siblings } = useGetList<VersionRecord>(
+    "versions",
+    { filter: { packId: r?.packId }, pagination: { page: 1, perPage: 200 }, sort: { field: "publishedAt", order: "DESC" } },
+    { enabled: open && !!r?.packId },
+  );
+  const lastAvailable = !!siblings && !siblings.some((v) => v.id !== r?.id && !v.withdrawnAt);
   if (!r || permissions === "editor") return null;
 
   const call = async (action: "withdraw" | "restore") => {
@@ -92,6 +100,12 @@ const WithdrawControls = () => {
             Grund und kann auf die beste noch verfügbare Version wechseln, auch eine ältere. Datei und Downloads bleiben
             erhalten; du kannst sie jederzeit wiederherstellen.
           </Alert>
+          {lastAvailable && (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+              Das ist die einzige verfügbare Version dieses Packs. Danach kann niemand das Pack mehr installieren, und
+              es verschwindet aus dem Launcher, bis du eine neue Version hochlädst oder diese wiederherstellst.
+            </Alert>
+          )}
           <MuiTextField
             autoFocus
             fullWidth
