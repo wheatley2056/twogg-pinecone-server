@@ -20,6 +20,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
+use sha2::Sha512;
 
 use crate::auth::Admin;
 use crate::db::{self, Version};
@@ -117,6 +118,8 @@ struct IndexFile {
 #[derive(Deserialize)]
 struct Hashes {
     sha1: String,
+    #[serde(default)]
+    sha512: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -272,8 +275,13 @@ fn allowed(state: &State, url: &str) -> bool {
         || state.config.extra_download_hosts.iter().any(|h| h == host)
 }
 
-/// Lädt `url` nach `dest` und liefert Größe und SHA-1.
-async fn fetch(state: &State, url: &str, dest: &Path, budget: &mut u64) -> Result<String, String> {
+/// Lädt `url` nach `dest` und liefert SHA-1 und SHA-512.
+async fn fetch(
+    state: &State,
+    url: &str,
+    dest: &Path,
+    budget: &mut u64,
+) -> Result<(String, String), String> {
     use futures::StreamExt;
     let resp = state
         .http
@@ -286,6 +294,7 @@ async fn fetch(state: &State, url: &str, dest: &Path, budget: &mut u64) -> Resul
         .await
         .map_err(|e| e.to_string())?;
     let mut hash = Sha1::new();
+    let mut hash512 = Sha512::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("{url}: {e}"))?;
@@ -293,11 +302,12 @@ async fn fetch(state: &State, url: &str, dest: &Path, budget: &mut u64) -> Resul
             .checked_sub(chunk.len() as u64)
             .ok_or("Server-Pack wäre größer als 4 GB")?;
         hash.update(&chunk);
+        hash512.update(&chunk);
         tokio::io::AsyncWriteExt::write_all(&mut out, &chunk)
             .await
             .map_err(|e| e.to_string())?;
     }
-    Ok(hex(&hash.finalize()))
+    Ok((hex(&hash.finalize()), hex(&hash512.finalize())))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -364,8 +374,12 @@ async fn build_in(
             .find(|u| allowed(state, u))
             .ok_or_else(|| format!("{}: kein erlaubter Download-Host", f.path))?;
         let dest = work.join(format!("{i}.bin"));
-        let sha1 = fetch(state, url, &dest, &mut budget).await?;
-        if !sha1.eq_ignore_ascii_case(&f.hashes.sha1) {
+        let (sha1, sha512) = fetch(state, url, &dest, &mut budget).await?;
+        // SHA-512 ist in der Modrinth-Spezifikation Pflicht; ältere Packs haben teils nur SHA-1.
+        let expected512 = f.hashes.sha512.as_deref().unwrap_or_default();
+        if !sha1.eq_ignore_ascii_case(&f.hashes.sha1)
+            || (!expected512.is_empty() && !sha512.eq_ignore_ascii_case(expected512))
+        {
             return Err(format!("{}: Prüfsumme stimmt nicht", f.path));
         }
         downloaded.push((f.path.clone(), dest));

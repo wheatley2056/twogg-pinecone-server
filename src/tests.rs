@@ -1670,6 +1670,33 @@ async fn launcher_post(t: &TestApp, uri: &str) -> (StatusCode, axum::http::Heade
     )
 }
 
+fn server_test_pack(host: &str, sha512: &str) -> Vec<u8> {
+    let mut buf = std::io::Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(&mut buf);
+    let opts = zip::write::SimpleFileOptions::default();
+    zip.start_file("modrinth.index.json", opts).unwrap();
+    let index = json!({ "formatVersion": 1, "game": "minecraft", "versionId": "6.5.0", "name": "Avalon",
+            "files": [
+                { "path": "mods/server.jar", "hashes": { "sha1": sha1_hex(b"server-mod"), "sha512": sha512 },
+                  "env": { "client": "required", "server": "required" }, "downloads": [format!("{host}/mods/server.jar")] },
+                { "path": "mods/client.jar", "hashes": { "sha1": sha1_hex(b"client-mod") },
+                  "env": { "client": "required", "server": "unsupported" }, "downloads": [format!("{host}/mods/client.jar")] },
+            ],
+            "dependencies": { "minecraft": "1.21.1", "fabric-loader": "0.19.5" } });
+    zip.write_all(index.to_string().as_bytes()).unwrap();
+    for (name, body) in [
+        ("overrides/config/twogg.json", "client"),
+        ("overrides/server.properties", "motd=Avalon"),
+        ("server-overrides/config/twogg.json", "server"),
+        ("client-overrides/options.txt", "fov:90"),
+    ] {
+        zip.start_file(name, opts).unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+    buf.into_inner()
+}
+
 /// Nachgebaute Download-Hosts und Fabric-Meta für Server-Packs.
 async fn mock_downloads() -> String {
     use axum::routing::get;
@@ -1690,6 +1717,14 @@ async fn mock_downloads() -> String {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     format!("http://{addr}")
+}
+
+fn sha512_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha512::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn sha1_hex(data: &[u8]) -> String {
@@ -1720,32 +1755,7 @@ async fn server_pack_leaves_out_client_mods() {
     )
     .await;
 
-    let pack = {
-        let mut buf = std::io::Cursor::new(Vec::new());
-        let mut zip = zip::ZipWriter::new(&mut buf);
-        let opts = zip::write::SimpleFileOptions::default();
-        zip.start_file("modrinth.index.json", opts).unwrap();
-        let index = json!({ "formatVersion": 1, "game": "minecraft", "versionId": "6.5.0", "name": "Avalon",
-            "files": [
-                { "path": "mods/server.jar", "hashes": { "sha1": sha1_hex(b"server-mod") },
-                  "env": { "client": "required", "server": "required" }, "downloads": [format!("{host}/mods/server.jar")] },
-                { "path": "mods/client.jar", "hashes": { "sha1": sha1_hex(b"client-mod") },
-                  "env": { "client": "required", "server": "unsupported" }, "downloads": [format!("{host}/mods/client.jar")] },
-            ],
-            "dependencies": { "minecraft": "1.21.1", "fabric-loader": "0.19.5" } });
-        zip.write_all(index.to_string().as_bytes()).unwrap();
-        for (name, body) in [
-            ("overrides/config/twogg.json", "client"),
-            ("overrides/server.properties", "motd=Avalon"),
-            ("server-overrides/config/twogg.json", "server"),
-            ("client-overrides/options.txt", "fov:90"),
-        ] {
-            zip.start_file(name, opts).unwrap();
-            zip.write_all(body.as_bytes()).unwrap();
-        }
-        zip.finish().unwrap();
-        buf.into_inner()
-    };
+    let pack = server_test_pack(&host, &sha512_hex(b"server-mod"));
     let (ct, body) = multipart(&[("packId", "avalon")], Some(("a.mrpack", &pack)));
     let (status, _, bytes) = app
         .send(
@@ -1822,6 +1832,38 @@ async fn server_pack_leaves_out_client_mods() {
         zip.by_name("eula.txt").is_err(),
         "EULA nimmt der Betreiber selbst an"
     );
+
+    // Falsche Prüfsumme: Erzeugen schlägt fehl.
+    let bad = server_test_pack(&host, &"0".repeat(128));
+    let (ct, body) = multipart(
+        &[("packId", "avalon"), ("version", "6.5.1")],
+        Some(("b.mrpack", &bad)),
+    );
+    let (_, _, bytes) = app
+        .send(
+            Request::post("/api/admin/versions")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, ct)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+    let bad_id = serde_json::from_slice::<Value>(&bytes).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bad_uri = format!("/api/admin/versions/{bad_id}/server-pack");
+    app.json("POST", &bad_uri, t, None).await;
+    let mut s = Value::Null;
+    for _ in 0..100 {
+        s = app.json("GET", &bad_uri, t, None).await.1;
+        if s["state"] != "building" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(s["state"], "failed", "{s}");
+    assert!(s["error"].as_str().unwrap().contains("Prüfsumme"), "{s}");
 
     // Gefälschter Link und gelöschte Version.
     let (status, _, _) = app
