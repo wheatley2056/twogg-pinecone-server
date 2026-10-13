@@ -1719,6 +1719,19 @@ async fn mock_downloads() -> String {
     format!("http://{addr}")
 }
 
+/// Wartet, bis das Server-Pack fertig oder fehlgeschlagen ist (höchstens 60 s, CI-Runner sind
+/// manchmal langsam).
+async fn wait_for_server_pack(app: &TestApp, uri: &str, t: Option<&str>) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let s = app.json("GET", uri, t, None).await.1;
+        if s["state"] != "building" || std::time::Instant::now() > deadline {
+            return s;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 fn sha512_hex(data: &[u8]) -> String {
     use sha2::Digest;
     sha2::Sha512::digest(data)
@@ -1783,14 +1796,7 @@ async fn server_pack_leaves_out_client_mods() {
     let (status, s) = app.json("POST", &uri, t, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(s["state"], "building");
-    let mut s = Value::Null;
-    for _ in 0..100 {
-        s = app.json("GET", &uri, t, None).await.1;
-        if s["state"] != "building" {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    let s = wait_for_server_pack(&app, &uri, t).await;
     assert_eq!(s["state"], "ready", "{s}");
     assert_eq!(s["removed"], json!(["client.jar"]));
     assert_eq!(s["loader"], "Fabric 0.19.5");
@@ -1854,14 +1860,7 @@ async fn server_pack_leaves_out_client_mods() {
         .to_string();
     let bad_uri = format!("/api/admin/versions/{bad_id}/server-pack");
     app.json("POST", &bad_uri, t, None).await;
-    let mut s = Value::Null;
-    for _ in 0..100 {
-        s = app.json("GET", &bad_uri, t, None).await.1;
-        if s["state"] != "building" {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    let s = wait_for_server_pack(&app, &bad_uri, t).await;
     assert_eq!(s["state"], "failed", "{s}");
     assert!(s["error"].as_str().unwrap().contains("Prüfsumme"), "{s}");
 
