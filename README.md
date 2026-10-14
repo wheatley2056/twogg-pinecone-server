@@ -40,6 +40,7 @@ Prüfen: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `carg
 | `PINECONE_CURSEFORGE_API_KEY` | CurseForge-API-Schlüssel für den Proxy (siehe unten). Ohne ihn ist CurseForge im Launcher ausgeblendet |
 | `PINECONE_CURSEFORGE_API` | CurseForge-API-Adresse (Standard `https://api.curseforge.com`, für Tests) |
 | `PINECONE_FABRIC_META` | Fabric-Meta für den Server-Starter in Server-Packs (Standard `https://meta.fabricmc.net`) |
+| `PINECONE_EVENTPACK_KEYS` | Öffentliche Schlüssel für Event-Pack-Manifeste, `keyId=Base64` (mehrere durch `;`), dieselben wie im Launcher. Ohne sie lehnt der Server Manifeste ab |
 | `PINECONE_PLAYER_RETENTION_DAYS` | Spielerprofile der Freundesliste, die so viele Tage nicht gesehen wurden, werden gelöscht (Standard 365, `0` = nie) |
 
 Datenbank-Migrationen laufen beim Start automatisch.
@@ -51,6 +52,7 @@ Datenbank-Migrationen laufen beim Start automatisch.
 | `GET /info` | Server-Infos, Community-Server (Name, Adresse), `curseforge` (Proxy verfügbar), `legal` (Impressum, Datenschutz, Kontakt), optional `banner` (`id`, `level` info/warning, `text`, `link`, `until`) und `minLauncherVersion` |
 | `GET /news?limit=10` | sichtbare Neuigkeiten (Markdown als HTML) |
 | `GET /packs`, `GET /packs/{id}` | öffentliche Modpacks mit Versionen, optional `eventId` (twogg.app-Event) |
+| `GET /packs/{id}/versions/{version}/manifest`, `GET /packs/{id}/manifest/latest?channel=release` | signiertes Event-Pack-Manifest `{manifest, signature}` (Header `X-Pinecone-Client`); `404` ohne Manifest |
 | `POST /packs/{id}/versions/{version}/download` | signierter Download-Link (Header `X-Pinecone-Client: pinecone/<version>`) |
 | `GET /recommendations?type=modpack\|mod\|resourcepack\|shader\|datapack` | TwoGG-Auswahl |
 | `POST /auth/challenge`, `POST /auth/verify` | Freunde-Anmeldung mit dem Minecraft-Konto (Mojang `join` / `hasJoined`), Sitzung 30 Tage |
@@ -98,6 +100,13 @@ keine Skripte und nur eigene Schriften (`assets/fonts`, OFL), Vorschau-Tags für
 
 `GET /dl/{token}` liefert die `.mrpack`-Datei. Die Admin-API liegt unter `/api/admin` (Sitzung per
 Bearer-Token, 12 Stunden gültig, Sperre nach Fehlversuchen).
+
+**Event-Manifest:** Event-Packs bekommen ein signiertes Manifest (Ed25519, erzeugt mit
+`pinecone eventpack sign` aus dem Launcher-Repo). Im Admin auf der Versionsseite Manifest und Signatur
+hochladen (oder beim Hochladen als Felder `manifest` und `signature` mitschicken, bzw. `PUT
+/api/admin/versions/{id}/manifest`). Der Server prüft Signatur, Pack, Version, Kanal, Minecraft,
+Loader, Größe und SHA-512 sowie das Event des Packs und weist alles ab, was nicht passt. Der Launcher
+prüft die Signatur selbst noch einmal.
 
 **Server-Pack:** Auf der Seite einer Version erzeugt „Server-Pack erzeugen“ ein ZIP für den
 Minecraft-Server: alle Dateien außer denen mit `env.server = "unsupported"` (geladen von den

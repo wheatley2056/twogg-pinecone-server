@@ -172,6 +172,12 @@ CREATE TABLE daily_stats (
     PRIMARY KEY (day, metric, key)
 ) WITHOUT ROWID;
 "#,
+    r#"
+-- Signierte Event-Pack-Manifeste (F-10): kanonisches JSON, Signatur, Schlüssel
+ALTER TABLE versions ADD COLUMN manifest TEXT;
+ALTER TABLE versions ADD COLUMN signature TEXT;
+ALTER TABLE versions ADD COLUMN manifest_key_id TEXT;
+"#,
 ];
 
 pub async fn connect(path: &Path) -> anyhow::Result<SqlitePool> {
@@ -275,6 +281,16 @@ pub struct Version {
     pub withdrawn_reason: Option<String>,
     #[sqlx(default)]
     pub withdrawn_at: Option<i64>,
+    /// Signiertes Event-Pack-Manifest (kanonisches JSON) und Signatur (F-10).
+    #[serde(skip)]
+    #[sqlx(default)]
+    pub manifest: Option<String>,
+    #[serde(skip)]
+    #[sqlx(default)]
+    pub signature: Option<String>,
+    /// Schlüssel, mit dem das Manifest signiert ist; `None` = nicht signiert.
+    #[sqlx(default)]
+    pub manifest_key_id: Option<String>,
 }
 
 impl Version {

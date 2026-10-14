@@ -36,6 +36,11 @@ pub fn routes() -> axum::Router<State> {
             "/packs/{id}/versions/{version}/download",
             post(download_link),
         )
+        .route(
+            "/packs/{id}/versions/{version}/manifest",
+            get(crate::eventpack::get_version),
+        )
+        .route("/packs/{id}/manifest/latest", get(crate::eventpack::latest))
 }
 
 #[derive(Serialize)]
@@ -170,6 +175,8 @@ pub struct VersionDto {
     size: i64,
     sha1: String,
     published_at: i64,
+    /// Signiertes Event-Pack-Manifest vorhanden (abrufbar unter `…/manifest`).
+    signed: bool,
 }
 
 impl From<Version> for VersionDto {
@@ -185,6 +192,7 @@ impl From<Version> for VersionDto {
             size: v.size,
             sha1: v.sha1,
             published_at: v.published_at,
+            signed: v.manifest.is_some(),
         }
     }
 }

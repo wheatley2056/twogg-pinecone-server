@@ -37,6 +37,10 @@ pub fn routes(state: State) -> Router<State> {
         .route("/versions/{id}/withdraw", post(withdraw_version))
         .route("/versions/{id}/restore", post(restore_version))
         .route(
+            "/versions/{id}/manifest",
+            axum::routing::put(crate::eventpack::put).delete(crate::eventpack::delete),
+        )
+        .route(
             "/versions/{id}/server-pack",
             get(crate::serverpack::status).post(crate::serverpack::start),
         )
@@ -615,6 +619,8 @@ async fn create_version(
         String::new(),
         None::<String>,
     );
+    // Optional: signiertes Event-Pack-Manifest (F-10), sonst später über PUT …/manifest.
+    let (mut manifest, mut signature) = (None::<String>, None::<String>);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let dir = files::packs_dir(&state.config.data_dir);
     let file_name = format!("{id}.mrpack");
@@ -635,6 +641,8 @@ async fn create_version(
                     "channel" => channel = Some(text),
                     "changelog" => changelog = text,
                     "version" => label = Some(text).filter(|t| !t.trim().is_empty()),
+                    "manifest" => manifest = Some(text).filter(|t| !t.trim().is_empty()),
+                    "signature" => signature = Some(text).filter(|t| !t.trim().is_empty()),
                     _ => {}
                 }
             }
@@ -692,6 +700,31 @@ async fn create_version(
         .bind(&pack_id)
         .execute(&state.db)
         .await?;
+    if manifest.is_some() || signature.is_some() {
+        let attached = async {
+            let (Some(m), Some(sig)) = (&manifest, &signature) else {
+                return Err(ApiError::bad_request(
+                    "Manifest und Signatur gehören zusammen (beide Dateien wählen)",
+                ));
+            };
+            let value: serde_json::Value = serde_json::from_str(m)
+                .map_err(|e| ApiError::bad_request(format!("Manifest ist kein JSON: {e}")))?;
+            let v: Version = sqlx::query_as("SELECT * FROM versions WHERE id = ?")
+                .bind(&id)
+                .fetch_one(&state.db)
+                .await?;
+            crate::eventpack::attach(&state, &v, &value, sig).await
+        }
+        .await;
+        if let Err(e) = attached {
+            // Nichts halb anlegen: Version samt Datei wieder entfernen.
+            sqlx::query("DELETE FROM versions WHERE id = ?")
+                .bind(&id)
+                .execute(&state.db)
+                .await?;
+            return Err(cleanup(e));
+        }
+    }
     tracing::info!(
         "Version {version} für {pack_id} hochgeladen ({} MB)",
         stored.size / 1_000_000
