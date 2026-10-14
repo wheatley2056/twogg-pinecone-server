@@ -29,13 +29,29 @@ import BlockIcon from "@mui/icons-material/Block";
 import RestoreIcon from "@mui/icons-material/Restore";
 import { bytes, fromUnix } from "../format";
 import { ServerPackCard } from "./ServerPack";
+import { ManifestCard } from "./ManifestCard";
 
-type VersionRecord = { id: string; packId: string; version: string; withdrawnReason?: string | null; withdrawnAt?: number | null };
+type VersionRecord = {
+  id: string;
+  packId: string;
+  version: string;
+  withdrawnReason?: string | null;
+  withdrawnAt?: number | null;
+  manifestKeyId?: string | null;
+};
 
 /** Status-Spalte: „zurückgezogen“ mit Grund als Tooltip. */
 const WithdrawnChip = () => {
   const r = useRecordContext<VersionRecord>();
-  return r?.withdrawnAt ? <Chip size="small" color="error" variant="outlined" label="zurückgezogen" title={r.withdrawnReason ?? ""} /> : null;
+  if (!r) return null;
+  return (
+    <>
+      {r.withdrawnAt ? <Chip size="small" color="error" variant="outlined" label="zurückgezogen" title={r.withdrawnReason ?? ""} /> : null}
+      {r.manifestKeyId ? (
+        <Chip size="small" color="success" variant="outlined" label="signiert" title={`Event-Manifest, Schlüssel ${r.manifestKeyId}`} sx={{ ml: r.withdrawnAt ? 0.5 : 0 }} />
+      ) : null}
+    </>
+  );
 };
 
 /** Zurückziehen (mit Grund) bzw. wiederherstellen (F-62). */
@@ -182,6 +198,7 @@ export const VersionEdit = () => (
   <Edit redirect={(_resource, _id, data) => `packs/${encodeURIComponent(String(data?.packId))}/1`}>
     <SimpleForm>
       <WithdrawControls />
+      <ManifestCard />
       <ServerPackCard />
       <ReferenceField source="packId" reference="packs" link="edit">
         <TextField source="title" />

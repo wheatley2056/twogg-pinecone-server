@@ -68,6 +68,11 @@ export const dataProvider: DataProvider = {
     const { json } = await httpClient(`${API}/stats`);
     return json as Stats;
   },
+  async setManifest(id: string, body: { manifest: unknown; signature: string } | null) {
+    const url = `${API}/versions/${encodeURIComponent(id)}/manifest`;
+    const { json } = await httpClient(url, body ? { method: "PUT", body: JSON.stringify(body) } : { method: "DELETE" });
+    return json;
+  },
   async serverPack(id: string, build = false) {
     const { json } = await httpClient(`${API}/versions/${encodeURIComponent(id)}/server-pack`, build ? { method: "POST" } : {});
     return json as ServerPack;

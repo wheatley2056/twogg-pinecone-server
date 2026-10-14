@@ -62,6 +62,8 @@ async fn setup_full(
         player_retention_days: 365,
         fabric_meta,
         extra_download_hosts: vec!["127.0.0.1".into()],
+        eventpack_keys: crate::eventpack::Keyring::parse(&format!("test={}", test_public_key()))
+            .unwrap(),
     };
     std::fs::create_dir_all(&config.admin_dir).unwrap();
     std::fs::write(config.admin_dir.join("index.html"), "<html>admin</html>").unwrap();
@@ -963,6 +965,7 @@ async fn cleanup_removes_long_inactive_players() {
         player_retention_days: 30,
         fabric_meta: "http://127.0.0.1:9".into(),
         extra_download_hosts: Vec::new(),
+        eventpack_keys: Default::default(),
     };
     let state = build_state(config).await.unwrap();
     let now = crate::db::now();
@@ -1879,4 +1882,158 @@ async fn server_pack_leaves_out_client_mods() {
         .send(Request::get(url).body(Body::empty()).unwrap())
         .await;
     assert_ne!(status, StatusCode::OK);
+}
+
+// ---------- Event-Pack-Manifeste (F-10) ----------
+
+fn test_signing_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+}
+
+fn test_public_key() -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(test_signing_key().verifying_key().to_bytes())
+}
+
+fn sign_manifest(manifest: &Value) -> String {
+    use base64::Engine;
+    use ed25519_dalek::Signer;
+    let canonical = crate::eventpack::canonical_json(manifest).unwrap();
+    base64::engine::general_purpose::STANDARD
+        .encode(test_signing_key().sign(canonical.as_bytes()).to_bytes())
+}
+
+fn sha512_hex_of(data: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha512::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn test_manifest(pack: &[u8], event: &str) -> Value {
+    json!({
+        "schema": "pinecone-eventpack/1", "packId": "avalon", "version": "1.2.0", "channel": "release",
+        "eventId": event, "title": "REVIVAL: Avalon", "minecraft": "1.21.1",
+        "loader": { "kind": "fabric", "version": "0.19.5" },
+        "minLauncherVersion": "0.10.0", "required": true, "allowExtraMods": false,
+        "mrpack": { "url": "https://pinecone.test/x", "size": pack.len(), "sha512": sha512_hex_of(pack) },
+        "locked": [{ "path": "mods/a.jar", "sha512": "00" }],
+        "publishedAt": "2026-10-14T00:00:00Z", "keyId": "test"
+    })
+}
+
+#[tokio::test]
+async fn signed_event_pack_manifests() {
+    let app = setup().await;
+    let token = login(&app).await;
+    let t = Some(token.as_str());
+    app.json(
+        "POST",
+        "/api/admin/packs",
+        t,
+        Some(json!({ "id": "avalon", "title": "Avalon", "visibility": "public", "eventId": "evt-1" })),
+    )
+    .await;
+    let pack = mrpack();
+    let upload = |fields: Vec<(&'static str, String)>| {
+        let token = token.clone();
+        let pack = pack.clone();
+        let app = &app;
+        async move {
+            let f: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let (ct, body) = multipart(&f, Some(("a.mrpack", &pack)));
+            let (status, _, bytes) = app
+                .send(
+                    Request::post("/api/admin/versions")
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .header(header::CONTENT_TYPE, ct)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await;
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+
+    // Falsches Event, kaputte Signatur, Manifest ohne Signatur: abgelehnt, nichts angelegt.
+    let wrong_event = test_manifest(&pack, "evt-2");
+    let (status, v) = upload(vec![
+        ("packId", "avalon".into()),
+        ("manifest", wrong_event.to_string()),
+        ("signature", sign_manifest(&wrong_event)),
+    ])
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("Event"), "{v}");
+    let good = test_manifest(&pack, "evt-1");
+    let mut tampered = good.clone();
+    tampered["allowExtraMods"] = json!(true);
+    let (status, v) = upload(vec![
+        ("packId", "avalon".into()),
+        ("manifest", tampered.to_string()),
+        ("signature", sign_manifest(&good)),
+    ])
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(v["error"].as_str().unwrap().contains("Signatur"), "{v}");
+    let (status, _) = upload(vec![
+        ("packId", "avalon".into()),
+        ("manifest", good.to_string()),
+    ])
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (_, list) = app.json("GET", "/api/v1/packs/avalon", None, None).await;
+    assert_eq!(
+        list["versions"].as_array().map(Vec::len),
+        Some(0),
+        "nichts halb angelegt"
+    );
+
+    // Ohne Manifest hochladen, dann nachreichen.
+    let (status, v) = upload(vec![("packId", "avalon".into())]).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(v["manifestKeyId"].is_null());
+    let vid = v["id"].as_str().unwrap().to_string();
+    let uri = format!("/api/v1/packs/avalon/versions/{vid}/manifest");
+    let (status, _, _) = launcher_get(&app, &uri).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, v) = app
+        .json(
+            "PUT",
+            &format!("/api/admin/versions/{vid}/manifest"),
+            t,
+            Some(json!({ "manifest": good, "signature": sign_manifest(&good) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["manifestKeyId"], "test");
+
+    // Launcher: nur mit Kennung, liefert Manifest und Signatur unverändert.
+    let (status, _) = app.json("GET", &uri, None, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, signed) = launcher_get(&app, &uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(signed["manifest"], good);
+    assert_eq!(signed["signature"], sign_manifest(&good));
+    let (_, _, latest) =
+        launcher_get(&app, "/api/v1/packs/avalon/manifest/latest?channel=beta").await;
+    assert_eq!(latest["manifest"]["version"], "1.2.0");
+    let (_, detail) = app.json("GET", "/api/v1/packs/avalon", None, None).await;
+    assert_eq!(detail["versions"][0]["signed"], true);
+
+    // Entfernen.
+    app.json(
+        "DELETE",
+        &format!("/api/admin/versions/{vid}/manifest"),
+        t,
+        None,
+    )
+    .await;
+    let (status, _, _) = launcher_get(&app, "/api/v1/packs/avalon/manifest/latest").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

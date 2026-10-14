@@ -10,6 +10,7 @@ mod auth;
 mod curseforge;
 mod db;
 mod error;
+mod eventpack;
 mod files;
 mod friends;
 mod markdown;
@@ -66,6 +67,8 @@ pub struct Config {
     pub fabric_meta: String,
     /// Zusätzlich erlaubte Download-Hosts für Server-Packs (nur Tests).
     pub extra_download_hosts: Vec<String>,
+    /// Öffentliche Schlüssel für Event-Pack-Manifeste (`PINECONE_EVENTPACK_KEYS`).
+    pub eventpack_keys: eventpack::Keyring,
 }
 
 impl Config {
@@ -117,6 +120,9 @@ impl Config {
                 .trim_end_matches('/')
                 .to_string(),
             extra_download_hosts: Vec::new(),
+            eventpack_keys: eventpack::Keyring::parse(
+                &var("PINECONE_EVENTPACK_KEYS").unwrap_or_default(),
+            )?,
         })
     }
 }
