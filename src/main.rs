@@ -19,6 +19,7 @@ mod pages;
 mod recommendations;
 mod serverpack;
 mod settings;
+mod shared;
 mod social;
 mod stats;
 
@@ -189,6 +190,7 @@ pub fn router(state: State) -> Router {
             api::routes()
                 .merge(friends::routes())
                 .merge(social::routes())
+                .merge(shared::routes())
                 .merge(curseforge::routes()),
         )
         .nest(
@@ -197,6 +199,7 @@ pub fn router(state: State) -> Router {
         )
         .route("/dl/{token}", get(api::download))
         .route("/dl/server/{token}", get(serverpack::download))
+        .route("/dl/shared/{token}", get(shared::download))
         .nest_service(
             "/media",
             tower::ServiceBuilder::new()

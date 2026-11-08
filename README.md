@@ -29,7 +29,7 @@ Prüfen: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `carg
 | Variable | Bedeutung |
 |---|---|
 | `PINECONE_ADDR` | Lauschadresse (Standard `0.0.0.0:8080`) |
-| `PINECONE_DATA_DIR` | Daten: `pinecone.db`, `packs/`, `media/`, `secret.key` |
+| `PINECONE_DATA_DIR` | Daten: `pinecone.db`, `packs/`, `shared-packs/`, `media/`, `secret.key` |
 | `PINECONE_PUBLIC_URL` | Öffentliche Adresse (für Links in Antworten) |
 | `PINECONE_ADMIN_USER` | Benutzername des Haupt-Admins (Standard `admin`); weitere Konten im Admin |
 | `PINECONE_ADMIN_PASSWORD` / `_HASH` | Passwort im Klartext oder als Argon2-Hash (`pinecone-server hash-password '…'`) |
@@ -63,8 +63,19 @@ Datenbank-Migrationen laufen beim Start automatisch.
 | `GET /friends/code`, `POST /friends/code` | eigener Freundescode `XXXX-XXXX-XX`; `POST` erzeugt einen neuen, der alte gilt sofort nicht mehr. Höchstens 10 falsche Codes je Spieler und Stunde |
 | `POST /invites` `{to, server, pack?, instance?}`, `POST /invites/{id}/answer` `{accept}` | Freund auf einen Server einladen (15 min gültig, höchstens 10 je Minute; `pack` nur als `pinecone://`-Link) |
 | `POST /sync-shares` `{data}`, `GET /sync-shares/{code}` | Sync-Pack teilen (≤ 64 KB, 30 Tage, höchstens 20 je Spieler); Abruf nur angemeldet |
+| `GET /shared-packs`, `POST /shared-packs` (Multipart `file`, `name`, `changelog`) | eigene geteilte Modpacks; neues Pack mit erster Version anlegen. Antwort `{id, name, owner, mine, link, createdAt, updatedAt, expiresAt, versions}` mit `link` = `pinecone://pack/<id>` |
+| `GET /shared-packs/{id}`, `DELETE /shared-packs/{id}` | geteiltes Pack abrufen (angemeldet, wer den Link hat) bzw. löschen (nur Ersteller) |
+| `POST /shared-packs/{id}/versions` (Multipart `file`, `changelog`, optional `name`) | neue Version veröffentlichen (nur Ersteller; Versionsnummer aus dem Pack, eindeutig, sonst `409`) |
+| `POST /shared-packs/{id}/versions/{version}/download` | signierter Download-Link wie bei TwoGG-Packs (Header `X-Pinecone-Client`), Datei unter `/dl/shared/{token}`; `410` für gelöschte ältere Versionen |
 
 `GET /packs/{id}` in der API enthält `pageUrl`, die öffentliche Seite des Packs.
+
+**Geteilte Packs** (`shared-packs`): Spieler veröffentlichen eine Instanz als `.mrpack`, so wie
+beim Datei-Export (auch mit eigenen Dateien). Geprüft wird wie bei TwoGG-Packs (Format, Pfade,
+Hashes). Grenzen: höchstens 100 MB je Version, 5 Packs je Spieler, die letzten 3 Versionen bleiben,
+ohne neue Version läuft ein Pack nach 180 Tagen ab. Die Dateien liegen unter `shared-packs/` im
+Datenordner. Sie verschwinden mit dem Pack, mit „Meine Freunde-Daten löschen“ und beim täglichen
+Aufräumen.
 
 ## CurseForge
 

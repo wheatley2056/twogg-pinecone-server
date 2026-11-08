@@ -2037,3 +2037,252 @@ async fn signed_event_pack_manifests() {
     let (status, _, _) = launcher_get(&app, "/api/v1/packs/avalon/manifest/latest").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+fn mrpack_version(version: &str) -> Vec<u8> {
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        zip.start_file("modrinth.index.json", opts).unwrap();
+        zip.write_all(
+            json!({ "formatVersion": 1, "game": "minecraft", "versionId": version, "name": "Freunde",
+                    "files": [], "dependencies": { "minecraft": "1.21.1", "fabric-loader": "0.19.5" } })
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+        zip.start_file("overrides/mods/eigener-mod.jar", opts)
+            .unwrap();
+        zip.write_all(b"jar").unwrap();
+        zip.finish().unwrap();
+    }
+    buf.into_inner()
+}
+
+impl TestApp {
+    async fn upload(
+        &self,
+        uri: &str,
+        token: &str,
+        fields: &[(&str, &str)],
+        file: Option<&[u8]>,
+    ) -> (StatusCode, Value) {
+        let (ct, body) = multipart(fields, file.map(|f| ("pack.mrpack", f)));
+        let req = Request::post(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, ct)
+            .body(Body::from(body))
+            .unwrap();
+        let (status, _, bytes) = self.send(req).await;
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+}
+
+#[tokio::test]
+async fn shared_packs_can_be_published_subscribed_and_updated() {
+    let t = setup_with_session(mock_mojang().await).await;
+    let alice = player_login(&t, "Alice").await;
+    let bob = player_login(&t, "Bob").await;
+
+    // Ohne Anmeldung geht nichts.
+    let (ct, body) = multipart(&[], Some(("p.mrpack", &mrpack_version("1.0"))));
+    let req = Request::post("/api/v1/shared-packs")
+        .header(header::CONTENT_TYPE, ct)
+        .body(Body::from(body))
+        .unwrap();
+    assert_eq!(t.send(req).await.0, StatusCode::UNAUTHORIZED);
+
+    // Kein Modpack → abgelehnt.
+    let (status, v) = t
+        .upload(
+            "/api/v1/shared-packs",
+            &alice,
+            &[("name", "X")],
+            Some(b"kein zip"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+
+    let (status, v) = t
+        .upload(
+            "/api/v1/shared-packs",
+            &alice,
+            &[("name", "Alices Pack"), ("changelog", "Erste Version")],
+            Some(&mrpack_version("1.0")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    let id = v["id"].as_str().unwrap().to_string();
+    assert_eq!(v["link"], format!("pinecone://pack/{id}"));
+    assert_eq!(v["mine"], true);
+    assert_eq!(v["versions"][0]["version"], "1.0");
+    assert_eq!(v["versions"][0]["loader"], "fabric");
+    let v1 = v["versions"][0]["id"].as_str().unwrap().to_string();
+
+    // Bob sieht das Pack (auch mit Kleinbuchstaben im Link) und lädt es.
+    let (status, v) = t
+        .json(
+            "GET",
+            &format!("/api/v1/shared-packs/{}", id.to_lowercase()),
+            Some(&bob),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["owner"], "Alice");
+    assert_eq!(v["mine"], false);
+    assert_eq!(v["name"], "Alices Pack");
+    let (status, _) = t
+        .json("GET", &format!("/api/v1/shared-packs/{id}"), None, None)
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let dl_uri = format!("/api/v1/shared-packs/{id}/versions/{v1}/download");
+    let (status, _) = t.json("POST", &dl_uri, Some(&bob), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "nur aus dem Launcher");
+    let req = Request::post(&dl_uri)
+        .header(header::AUTHORIZATION, format!("Bearer {bob}"))
+        .header("x-pinecone-client", "pinecone/0.9.9")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, bytes) = t.send(req).await;
+    assert_eq!(status, StatusCode::OK);
+    let link: Value = serde_json::from_slice(&bytes).unwrap();
+    let url = link["url"].as_str().unwrap();
+    let path = url.strip_prefix("https://pinecone.test").unwrap();
+    assert!(path.starts_with("/dl/shared/"));
+    let (status, _, file) = t
+        .send(Request::get(path).body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(file, mrpack_version("1.0"));
+    // Das Token gilt nicht für TwoGG-Packs.
+    let token = path.strip_prefix("/dl/shared/").unwrap();
+    let (status, _, _) = t
+        .send(
+            Request::get(format!("/dl/{token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+
+    // Nur Alice darf neue Versionen veröffentlichen.
+    let uri = format!("/api/v1/shared-packs/{id}/versions");
+    let (status, _) = t
+        .upload(&uri, &bob, &[], Some(&mrpack_version("2.0")))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = t
+        .upload(&uri, &alice, &[], Some(&mrpack_version("1.0")))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "gleiche Versionsnummer");
+    for version in ["2.0", "3.0", "4.0"] {
+        let (status, v) = t
+            .upload(
+                &uri,
+                &alice,
+                &[("changelog", "Neu")],
+                Some(&mrpack_version(version)),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{v}");
+    }
+    let (_, v) = t
+        .json(
+            "GET",
+            &format!("/api/v1/shared-packs/{id}"),
+            Some(&bob),
+            None,
+        )
+        .await;
+    let versions: Vec<&str> = v["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["version"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        versions,
+        ["4.0", "3.0", "2.0"],
+        "neueste zuerst, höchstens 3"
+    );
+    // Alte Version ist weg.
+    let req = Request::post(&dl_uri)
+        .header(header::AUTHORIZATION, format!("Bearer {bob}"))
+        .header("x-pinecone-client", "pinecone/0.9.9")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(t.send(req).await.0, StatusCode::GONE);
+
+    // Eigene Packs und Grenze je Spieler.
+    let (_, v) = t
+        .json("GET", "/api/v1/shared-packs", Some(&alice), None)
+        .await;
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    let (_, v) = t
+        .json("GET", "/api/v1/shared-packs", Some(&bob), None)
+        .await;
+    assert!(v.as_array().unwrap().is_empty());
+    for i in 1..crate::shared::MAX_PACKS {
+        let (status, v) = t
+            .upload(
+                "/api/v1/shared-packs",
+                &alice,
+                &[("name", &format!("P{i}"))],
+                Some(&mrpack_version("1.0")),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{v}");
+    }
+    let (status, _) = t
+        .upload(
+            "/api/v1/shared-packs",
+            &alice,
+            &[],
+            Some(&mrpack_version("1.0")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Löschen: nur Alice; danach ist der Link ungültig.
+    let (status, _) = t
+        .json(
+            "DELETE",
+            &format!("/api/v1/shared-packs/{id}"),
+            Some(&bob),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = t
+        .json(
+            "DELETE",
+            &format!("/api/v1/shared-packs/{id}"),
+            Some(&alice),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = t
+        .json(
+            "GET",
+            &format!("/api/v1/shared-packs/{id}"),
+            Some(&bob),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // „Meine Freunde-Daten löschen“ nimmt die übrigen Packs mit.
+    let (status, _) = t.json("DELETE", "/api/v1/me", Some(&alice), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let alice = player_login(&t, "Alice").await;
+    let (_, v) = t
+        .json("GET", "/api/v1/shared-packs", Some(&alice), None)
+        .await;
+    assert!(v.as_array().unwrap().is_empty());
+}

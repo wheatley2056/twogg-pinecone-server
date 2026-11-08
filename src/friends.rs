@@ -611,6 +611,9 @@ pub async fn cleanup_loop(state: State) {
         if let Err(e) = crate::social::cleanup(&state).await {
             tracing::warn!("Aufräumen von Einladungen und Freigaben: {e}");
         }
+        if let Err(e) = crate::shared::cleanup(&state).await {
+            tracing::warn!("Aufräumen der geteilten Packs: {e}");
+        }
         match cleanup(&state).await {
             Ok(0) => {}
             Ok(n) => tracing::info!("{n} inaktive Spielerprofile gelöscht"),
