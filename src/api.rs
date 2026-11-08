@@ -296,13 +296,13 @@ async fn pack(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DownloadLink {
-    url: String,
-    expires: i64,
-    size: i64,
-    sha1: String,
-    sha512: String,
-    file_name: String,
+pub(crate) struct DownloadLink {
+    pub url: String,
+    pub expires: i64,
+    pub size: i64,
+    pub sha1: String,
+    pub sha512: String,
+    pub file_name: String,
 }
 
 /// Echte Client-IP hinter Cloudflare/Nginx Proxy Manager.
@@ -420,7 +420,7 @@ pub async fn download(
         .into_response())
 }
 
-fn sanitize(s: &str) -> String {
+pub(crate) fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || ".-_+".contains(c) {

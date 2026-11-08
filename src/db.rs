@@ -178,6 +178,32 @@ ALTER TABLE versions ADD COLUMN manifest TEXT;
 ALTER TABLE versions ADD COLUMN signature TEXT;
 ALTER TABLE versions ADD COLUMN manifest_key_id TEXT;
 "#,
+    r#"
+-- Von Spielern geteilte Modpacks zum Abonnieren (`pinecone://pack/<id>`)
+CREATE TABLE shared_packs (
+    id         TEXT PRIMARY KEY,
+    owner_uuid TEXT NOT NULL REFERENCES players(uuid) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX shared_packs_owner ON shared_packs(owner_uuid);
+CREATE TABLE shared_pack_versions (
+    id             TEXT PRIMARY KEY,
+    pack_id        TEXT NOT NULL REFERENCES shared_packs(id) ON DELETE CASCADE,
+    version        TEXT NOT NULL,
+    minecraft      TEXT NOT NULL,
+    loader         TEXT,
+    loader_version TEXT,
+    changelog      TEXT NOT NULL DEFAULT '',
+    file           TEXT NOT NULL,
+    size           INTEGER NOT NULL,
+    sha1           TEXT NOT NULL,
+    sha512         TEXT NOT NULL,
+    published_at   INTEGER NOT NULL,
+    UNIQUE (pack_id, version)
+);
+"#,
 ];
 
 pub async fn connect(path: &Path) -> anyhow::Result<SqlitePool> {

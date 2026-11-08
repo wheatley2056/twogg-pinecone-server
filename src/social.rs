@@ -29,7 +29,7 @@ const MAX_SHARES: i64 = 20;
 const CODE_FAILURES_PER_HOUR: u32 = 10;
 
 /// Ohne verwechselbare Zeichen (0/O, 1/I/L, U): 30 Zeichen, also knapp 4,9 Bit je Stelle.
-const ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTVWXYZ";
+pub(crate) const ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 pub fn routes() -> Router<State> {
     Router::new()
@@ -40,7 +40,7 @@ pub fn routes() -> Router<State> {
         .route("/sync-shares/{code}", get(get_share))
 }
 
-fn random_code(len: usize) -> String {
+pub(crate) fn random_code(len: usize) -> String {
     let mut rng = rand::rngs::OsRng;
     (0..len)
         .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
